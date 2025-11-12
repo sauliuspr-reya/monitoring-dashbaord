@@ -1,0 +1,176 @@
+name: reya-gcp-mainnet-fee-tiers-pipeline
+version: 2
+resource_size: s
+apiVersion: 3
+sources:
+  fee_tier_parameters_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-fee-tiers-reya
+        version: 2.0.0
+    name: fee_tier_parameters_updated
+    start_at: latest
+  global_fee_parameters_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-fee-tiers-reya
+        version: 2.0.0
+    name: global_fee_parameters_updated
+    start_at: latest
+  account_owner_fee_configuration_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-fee-tiers-reya
+        version: 2.0.0
+    name: account_owner_fee_configuration_updated
+    start_at: latest
+  referral_mapping_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-fee-tiers-reya
+        version: 2.0.0
+    name: referral_mapping_updated
+    start_at: latest
+  owner_main_account_id_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-fee-tiers-reya
+        version: 2.0.0
+    name: owner_main_account_id_updated
+    start_at: latest
+transforms:
+  fee_tier_parameters_updated_snapshot:
+    type: sql
+    primary_key: tier_id
+    sql: >-
+      select
+          tier_id,
+          fee_tier_parameters_taker_fee as taker_fee,
+          fee_tier_parameters_maker_fee as maker_fee,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          fee_tier_parameters_updated;
+  global_fee_parameters_updated_snapshot:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          1 as id,
+          global_fee_parameters_og_discount as og_discount,
+          global_fee_parameters_vltz_discount as vltz_discount,
+          global_fee_parameters_referee_discount as referee_discount,
+          global_fee_parameters_referrer_rebate as referrer_rebate,
+          global_fee_parameters_affiliate_referrer_rebate as affiliate_referrer_rebate,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          global_fee_parameters_updated;
+  account_owner_fee_configuration_updated_snapshot:
+    type: sql
+    primary_key: owner_address
+    sql: >-
+      select
+          account_owner as owner_address,
+          account_owner_fee_config_tier_id as tier_id,
+          account_owner_fee_config_og_status as og_status,
+          account_owner_fee_config_vltz_status as vltz_status,
+          account_owner_fee_config_affiliate_status as affiliate_status,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_owner_fee_configuration_updated;
+  referral_mapping_updated_snapshot:
+    type: sql
+    primary_key: owner_address
+    sql: >-
+      select
+          referee_account_owner as owner_address,
+          case when trim(lower(referrer_account_owner)) = '0x0000000000000000000000000000000000000000' then false
+            else true end as referee_status,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          referral_mapping_updated;
+  owner_main_account_id_updated_snapshot:
+    type: sql
+    primary_key: owner_address
+    sql: >-
+      select
+          owner as owner_address,
+          new_main_account_id as main_account_id,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          owner_main_account_id_updated;
+  referral_mappings_updated_snapshot:
+    type: sql
+    primary_key: referee_account_owner
+    sql: >-
+      select
+          referee_account_owner,
+          referrer_account_owner,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          referral_mapping_updated;
+sinks:
+  postgres.fee_tier_parameters:
+    type: postgres
+    table: fee_tier_parameters
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: fee_tier_parameters"
+    from: fee_tier_parameters_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.global_fee_parameters:
+    type: postgres
+    table: global_fee_parameters
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: global_fee_parameters"
+    from: global_fee_parameters_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.account_owner_configuration_fees:
+    type: postgres
+    table: account_owner_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: account_owner_configuration_fees"
+    from: account_owner_fee_configuration_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.account_owner_configuration_referral_mapping:
+    type: postgres
+    table: account_owner_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of:
+      account_owner_configuration_referral_mapping"
+    from: referral_mapping_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.account_owner_configuration_main_account_id:
+    type: postgres
+    table: account_owner_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of:
+      account_owner_configuration_main_account_id"
+    from: owner_main_account_id_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.referral_mappings:
+    type: postgres
+    table: referral_mappings
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: referral_mappings"
+    from: referral_mappings_updated_snapshot
+    conditional_upsert_column: unique_id
+use_dedicated_ip: true
+
+

@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup-sync-manual
+  namespace: postgres-replication
+spec:
+  template:
+    spec:
+      containers:
+      - name: sync
+        image: restic/restic:latest
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            echo "Fetching snapshots from restic..."
+            restic snapshots --json > /tmp/snapshots.json
+            
+            echo "Snapshots:"
+            cat /tmp/snapshots.json | head -100
+            
+            SNAPSHOT_COUNT=$(cat /tmp/snapshots.json | grep -o '"short_id"' | wc -l)
+            echo ""
+            echo "Found $SNAPSHOT_COUNT snapshots"
+        env:
+        - name: RESTIC_REPOSITORY
+          value: "gs:reya-mainnet-sql-backup:/backrest/"
+        - name: RESTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backrest-secrets
+              key: restic-password
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/google/key.json
+      restartPolicy: Never
+  backoffLimit: 1

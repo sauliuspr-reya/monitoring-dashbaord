@@ -1,0 +1,37 @@
+name: reya-gcp-mainnet-periphery-pipeline
+version: 3
+resource_size: s
+apiVersion: 3
+sources:
+  fee_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-periphery-reya
+        version: "1"
+    name: fee_updated
+    start_at: latest
+transforms:
+  fee_updated_snapshot:
+    type: sql
+    primary_key: token_address, connector_address
+    sql: >-
+      select
+          token AS token_address,
+          connector AS connector_address,
+          fee AS fees,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          fee_updated;
+sinks:
+  postgres.socket_withdraw_fees:
+    type: postgres
+    table: socket_withdraw_fees
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for: socket_withdraw_fees"
+    from: fee_updated_snapshot
+use_dedicated_ip: true
+
+

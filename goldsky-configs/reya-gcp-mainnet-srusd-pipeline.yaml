@@ -1,0 +1,47 @@
+name: reya-gcp-mainnet-srusd-pipeline
+version: 1
+resource_size: s
+apiVersion: 3
+sources:
+  mint_or_burn:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-srusd-reya
+        version: 1.0.0
+    name: mint_or_burn
+    start_at: latest
+transforms:
+  mint_or_burn_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          pool_id,
+          `from`,
+          staked_token_amount,
+          token,
+          token_amount,
+          token_amount_in_quote,
+          action_metadata_action,
+          action_metadata_on_behalf_of,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          mint_or_burn;
+sinks:
+  postgres.lp_unified_account_balance_entries:
+    type: postgres
+    table: lp_unified_account_balance_entries
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: lp_unified_account_balance_entries"
+    from: mint_or_burn_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+use_dedicated_ip: true
+
+

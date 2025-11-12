@@ -1,0 +1,103 @@
+name: reya-gcp-mainnet-rebalance-pipeline
+version: 2
+resource_size: s
+apiVersion: 3
+sources:
+  auto_rebalance_executed:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-rebalance-reya
+        version: "1"
+    name: auto_rebalance_executed
+    start_at: latest
+  target_ratio_post_quote_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-rebalance-reya
+        version: "1"
+    name: target_ratio_post_quote_updated
+    start_at: latest
+  allocation_configuration_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-rebalance-reya
+        version: "1"
+    name: allocation_configuration_updated
+    start_at: latest
+transforms:
+  auto_rebalance_executed_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          pool_id,
+          token_in,
+          token_out,
+          amount_in,
+          amount_out,
+          receiver_address,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          auto_rebalance_executed;
+  target_ratio_post_quote_updated_snapshot:
+    type: sql
+    primary_key: pool_id, token
+    sql: >-
+      select
+          pool_id,
+          token,
+          target_ratio_post_quote,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          target_ratio_post_quote_updated;
+  allocation_configuration_updated_snapshot:
+    type: sql
+    primary_key: pool_id
+    sql: >-
+      select
+          pool_id,
+          allocation_config_quote_token_target_ratio AS quote_token_target_ratio,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          allocation_configuration_updated;
+sinks:
+  postgres.auto_rebalance_transactions:
+    type: postgres
+    table: auto_rebalance_transactions
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: auto_rebalance_transactions"
+    from: auto_rebalance_executed_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.auto_rebalance_target_ratio_post_quote:
+    type: postgres
+    table: auto_rebalance_target_ratio_post_quote
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: auto_rebalance_target_ratio_post_quote"
+    from: target_ratio_post_quote_updated_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.auto_rebalance_allocation_configuration:
+    type: postgres
+    table: auto_rebalance_allocation_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: auto_rebalance_allocation_configuration"
+    from: allocation_configuration_updated_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+use_dedicated_ip: true
+
+

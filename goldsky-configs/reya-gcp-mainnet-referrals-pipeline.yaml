@@ -1,0 +1,154 @@
+name: reya-gcp-mainnet-referrals-pipeline
+version: 2
+resource_size: s
+apiVersion: 3
+sources:
+  referrer_tier_rebate_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-referrals-reya
+        version: "1"
+    name: referrer_tier_rebate_updated
+    start_at: latest
+  referrer_account_tier_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-referrals-reya
+        version: "1"
+    name: referrer_account_tier_updated
+    start_at: latest
+  referral_mapping_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-referrals-reya
+        version: "1"
+    name: referral_mapping_updated
+    start_at: latest
+  passive_perp_match_order:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-mainnet-referrals-reya
+        version: "1"
+    name: passive_perp_match_order
+    start_at: latest
+transforms:
+  referral_mapping_updated_snapshot:
+    type: sql
+    primary_key: referee_account_id, referrer_account_id
+    sql: >-
+      select
+          referee_account_id,
+          referrer_account_id,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          referral_mapping_updated;
+  referrer_account_tier_updated_snapshot:
+    type: sql
+    primary_key: referrer_account_id
+    sql: >-
+      select
+          referrer_account_id,
+          tier_id,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          referrer_account_tier_updated;
+  referrer_tier_rebate_updated_snapshot:
+    type: sql
+    primary_key: tier_id
+    sql: >-
+      select
+          tier_id,
+          referrer_rebate_parameter,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          referrer_tier_rebate_updated;
+  passive_perp_match_order_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          market_id,
+          account_id,
+          order_base,
+          match_order_fees_taker_fee_debit AS fee,
+          executed_order_price AS price,
+          'order' AS type,
+          false AS processed,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          passive_perp_match_order;
+  rebate_fee_history_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          market_id,
+          account_id as referee_account_id,
+          referrer_account_id,
+          match_order_fees_referrer_fee_credit AS rebate_fee,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          passive_perp_match_order where referrer_account_id <> 0;
+sinks:
+  postgres.referral_mapping_event:
+    type: postgres
+    table: referral_mapping_event
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: referral_mapping_event"
+    from: referral_mapping_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.referrer_account_tier_event:
+    type: postgres
+    table: referrer_account_tier_event
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: referrer_account_tier_event"
+    from: referrer_account_tier_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.referrer_tier_rebate_event:
+    type: postgres
+    table: referrer_tier_rebate_event
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: referrer_tier_rebate_event"
+    from: referrer_tier_rebate_updated_snapshot
+    conditional_upsert_column: unique_id
+  postgres.rebate_fee_history:
+    type: postgres
+    table: rebate_fee_history
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: rebate_fee_history"
+    from: rebate_fee_history_rows
+    conditional_upsert_column: unique_id
+  postgres.order_history_match_orders:
+    type: postgres
+    table: order_history
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: passive_perp_match_order_rows"
+    from: passive_perp_match_order_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+use_dedicated_ip: true
+
+

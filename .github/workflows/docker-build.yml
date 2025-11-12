@@ -1,0 +1,68 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version/tag'
+        required: false
+        default: 'latest'
+
+env:
+  IMAGE_REPO: gcr.io/mainnet-473609/monitoring-dashbaord
+  REGISTRY: gcr.io
+  PROJECT_ID: mainnet-473609
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          elif [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_SHA::8}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Tag: $VERSION"
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }} .
+          docker tag ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }} ${{ env.IMAGE_REPO }}:latest
+
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }}
+          docker push ${{ env.IMAGE_REPO }}:latest
+

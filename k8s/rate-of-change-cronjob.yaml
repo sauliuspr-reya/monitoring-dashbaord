@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rate-of-change-collector
+  namespace: default  # Change to your namespace
+spec:
+  # Run every 10 minutes
+  schedule: "*/10 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid  # Don't run multiple instances at once
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: collector
+            image: your-registry/migration-dashboard:latest  # Use your image
+            command:
+              - ts-node
+              - lib/worker/rate-of-change-collector.ts
+              - once
+            env:
+            # Monitoring database connection
+            - name: MONITORING_DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-db-secret
+                  key: host
+            - name: MONITORING_DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-db-secret
+                  key: port
+            - name: MONITORING_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-db-secret
+                  key: database
+            - name: MONITORING_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-db-secret
+                  key: username
+            - name: MONITORING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: monitoring-db-secret
+                  key: password
+            
+            # Source database connection (optional - will use subscriptions if not set)
+            - name: SOURCE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secrets
+                  key: source-url
+                  optional: true
+            
+            # Target database connection (optional)
+            - name: TARGET_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secrets
+                  key: target-url
+                  optional: true
+            
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"

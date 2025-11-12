@@ -1,0 +1,693 @@
+name: reya-gcp-network
+version: 1
+resource_size: s
+apiVersion: 3
+sources:
+  risk_matrix_creation:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: risk_matrix_creation
+    start_at: latest
+  risk_multipliers_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: risk_multipliers_updated
+    start_at: latest
+  market_configuration_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: market_configuration_updated
+    start_at: latest
+  tier_fee_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: tier_fee_updated
+    start_at: latest
+  account_tier_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: account_tier_updated
+    start_at: latest
+  collateral_configuration:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: collateral_parent_configuration_updated
+    start_at: latest
+  account_collateral_shares_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: account_collateral_shares_updated
+    start_at: latest
+  account_owner_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: account_owner_updated
+    start_at: latest
+  market_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: market_updated
+    start_at: latest
+  deposited:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: deposited
+    start_at: latest
+  withdrawn:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: withdrawn
+    start_at: latest
+  share_balance_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: share_balance_updated
+    start_at: latest
+  passive_perp_match_order:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: passive_perp_match_order
+    start_at: latest
+  passive_perp_liquidation_order:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: passive_perp_liquidation_order
+    start_at: latest
+  pool_created:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: pool_created
+    start_at: latest
+  account_signature_nonce_incremented:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: account_signature_nonce_incremented
+    start_at: latest
+  account_signature_nonce_incremented_pool:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: account_signature_nonce_incremented_pool
+    start_at: latest
+  liquidation_configuration_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: liquidation_configuration_updated
+    start_at: latest
+  auto_exchange_triggered:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: auto_exchange_triggered
+    start_at: latest
+  auto_exchange_configuration_updated:
+    type: subgraph_entity
+    subgraphs:
+      - name: reya-network-latest
+        version: v1
+    name: auto_exchange_configuration_updated
+    start_at: latest
+transforms:
+  risk_matrix_snapshot:
+    type: sql
+    primary_key: collateral_pool_id, risk_block_id
+    sql: >-
+      select
+          collateral_pool_id,
+          risk_block_id,
+          risk_matrix,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          risk_matrix_creation;
+  risk_multipliers_configuration_snapshot:
+    type: sql
+    primary_key: collateral_pool_id
+    sql: >-
+      select
+          collateral_pool_id,
+          new_config_im_multiplier AS im_multiplier,
+          new_config_mmr_multiplier AS mmr_multiplier,
+          new_config_dutch_multiplier AS dutch_multiplier,
+          new_config_adl_multiplier AS adl_multiplier,
+          new_config_im_buffer_multiplier AS im_buffer_multiplier,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          risk_multipliers_updated;
+  market_configuration_snapshot:
+    type: sql
+    primary_key: market_id
+    sql: >-
+      select
+          market_id,
+          market_config_risk_matrix_index AS risk_matrix_index,
+          market_config_max_open_base AS max_open_base,
+          market_config_velocity_multiplier AS velocity_multiplier,
+          market_config_minimum_order_base AS minimum_order_base,
+          market_config_base_spacing AS base_spacing,
+          market_config_price_spacing AS price_spacing,
+          market_config_mtm_window AS mtm_window,
+          market_config_oracle_node_id AS oracle_node_id,
+          market_config_dutch_config_lambda AS dutch_config_lambda,
+          market_config_dutch_config_min_base AS dutch_config_min_base,
+          market_config_slippage_params_phi AS slippage_params_phi,
+          market_config_slippage_params_beta AS slippage_params_beta,
+          market_config_depth_factor AS depth_factor,
+          market_config_max_exposure_factor AS max_exposure_factor,
+          market_config_max_p_slippage AS max_p_slippage,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          market_configuration_updated;
+  tier_fee_snapshot:
+    type: sql
+    primary_key: market_id, tier_id
+    sql: >-
+      select
+          market_id,
+          tier_id,
+          fee_parameter,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          tier_fee_updated;
+  account_tier_snapshot:
+    type: sql
+    primary_key: market_id, account_id
+    sql: >-
+      select
+          market_id,
+          account_id,
+          tier_id,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_tier_updated;
+  collateral_configuration_snapshot:
+    type: sql
+    primary_key: collateral_pool_id, collateral_address
+    sql: >-
+      select
+          collateral_pool_id,
+          collateral_address,
+          new_config_price_haircut AS price_haircut,
+          new_config_auto_exchange_discount AS auto_exchange_discount,
+          new_config_oracle_node_id AS oracle_node_id,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          collateral_configuration;
+  account_collateral_shares_snapshot:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          account_id,
+          collateral,
+          shares_delta AS amount,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_collateral_shares_updated where shares_delta <> 0;
+  account_owner_updated_history:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          account_id,
+          transaction_hash,
+          new_owner,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_owner_updated;
+  account_owner_updated_snapshot:
+    type: sql
+    primary_key: account_id
+    sql: >-
+      select
+          account_id,
+          transaction_hash,
+          new_owner,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_owner_updated;
+  market_storage_snapshot:
+    type: sql
+    primary_key: market_id
+    sql: >-
+      select
+          market_id,
+          market_quote_collateral AS quote_collateral,
+          market_instrument_address AS instrument_address,
+          market_name AS name,
+          market_risk_block_id AS risk_block_id,
+          market_collateral_pool_id AS collateral_pool_id,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          market_updated;
+  margin_account_balance_entries_rows_deposit:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          account_id,
+          collateral,
+          collateral_amount AS amount,
+          'deposit' AS type,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          deposited;
+  margin_account_balance_entries_rows_withdraw:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          account_id,
+          collateral,
+          collateral_amount AS amount,
+          'withdraw' AS type,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          withdrawn;
+  share_balance_updated_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          pool_id,
+          account,
+          share_delta AS share,
+          token_delta AS amount,
+          new_share_balance,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          share_balance_updated;
+  passive_perp_match_order_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          market_id,
+          account_id,
+          order_base,
+          match_order_fees_taker_fee_debit AS fee,
+          executed_order_price AS price,
+          'order' AS type,
+          false AS processed,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          passive_perp_match_order;
+  passive_perp_liquidation_order_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          market_id,
+          liquidatable_account_id AS account_id,
+          liquidated_base AS order_base,
+          0 AS fee,
+          executed_price AS price,
+          'liquidation' AS type,
+          false AS processed,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          passive_perp_liquidation_order;
+  pool_created_rows:
+    type: sql
+    primary_key: pool_id
+    sql: >-
+      select
+          pool_id,
+          account_id,
+          quote_token,
+          transaction_hash,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          pool_created;
+  account_signature_nonce_incremented_snapshot:
+    type: sql
+    primary_key: account_owner
+    sql: >-
+      select
+          account_owner,
+          new_account_sig_nonce AS nonce,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_signature_nonce_incremented;
+  account_signature_nonce_incremented_pool_snapshot:
+    type: sql
+    primary_key: account_owner
+    sql: >-
+      select
+          account_owner,
+          new_account_sig_nonce AS nonce,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          account_signature_nonce_incremented_pool;
+  liquidation_configuration_snapshot:
+    type: sql
+    primary_key: collateral_pool_id
+    sql: >-
+      select
+          collateral_pool_id,
+          new_config_bid_keeper_fee AS bid_keeper_fee,
+          new_config_queue_duration_in_seconds AS queue_duration_in_seconds,
+          new_config_max_orders_in_bid AS max_orders_in_bid,
+          new_config_max_bids_in_queue AS max_bids_in_queue,
+          new_config_bid_score_weight AS bid_score_weight,
+          new_config_backstop_keeper_fee AS backstop_keeper_fee,
+          new_config_adl_execution_keeper_fee AS adl_execution_keeper_fee,
+          new_config_d_dutch_min AS d_dutch_min,
+          new_config_d_max AS d_max,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          liquidation_configuration_updated;
+  auto_exchange_rows:
+    type: sql
+    primary_key: id
+    sql: >-
+      select
+          id,
+          input_account_id AS liquidated_account_id,
+          input_liquidator_account_id AS liquidator_account_id,
+          input_requested_quote_amount AS requested_quote_amount,
+          input_collateral AS collateral_out_address,
+          input_in_collateral AS collateral_in_address,
+          output_collateral_amount_to_liquidator AS collateral_amount_to_liquidator,
+          output_quote_amount_to_if AS quote_amount_to_insurance_fund,
+          output_quote_amount_to_account AS quote_amount_to_account,
+          block_timestamp,
+          block_number,
+          transaction_hash,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          auto_exchange_triggered;
+  auto_exchange_configuration_snapshot:
+    type: sql
+    primary_key: collateral_pool_id,
+    sql: >-
+      select
+          collateral_pool_id,
+          new_config_total_auto_exchange_threshold_in_usd AS total_auto_exchange_threshold_in_usd,
+          new_config_negative_collateral_balances_multiplier AS negative_collateral_balances_multiplier,
+          new_config_quote_buffer_percentage as quote_buffer_percentage,
+          block_timestamp,
+          block_number,
+          CAST(CAST(CAST(block_number AS BIGINT) AS STRING) || LPAD(CAST(split_index(id, '-', 1) AS STRING), 5, '0') AS BIGINT) AS unique_id
+      from 
+          auto_exchange_configuration_updated;
+sinks:
+  postgres.risk_matrix:
+    type: postgres
+    table: risk_matrix
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: risk_matrix"
+    from: risk_matrix_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.risk_multipliers_configuration:
+    type: postgres
+    table: risk_multipliers_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: risk_matrix"
+    from: risk_multipliers_configuration_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.market_configuration:
+    type: postgres
+    table: market_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: market_configuration"
+    from: market_configuration_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.tier_fee_snapshot:
+    type: postgres
+    table: tier_fee
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: tier_fee"
+    from: tier_fee_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_tier_snapshot:
+    type: postgres
+    table: account_tier
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: account_tier"
+    from: account_tier_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres_.collateral_configuration_snapshot:
+    type: postgres
+    table: collateral_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: collateral_configuration"
+    from: collateral_configuration_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_collateral_balance_entries:
+    type: postgres
+    table: account_collateral_balance_entries
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: account_collateral_balance_entries"
+    from: account_collateral_shares_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_owner_updated_history:
+    type: postgres
+    table: account_owner_updated_history
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for history of: account_owner_updated"
+    from: account_owner_updated_history
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_owner_updated_snapshot:
+    type: postgres
+    table: account_owner_updated_snapshot
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: account_owner_updated"
+    from: account_owner_updated_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.market_storage:
+    type: postgres
+    table: market_storage
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: market_storage"
+    from: market_storage_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.margin_accounts_balance_entries_deposit:
+    type: postgres
+    table: margin_accounts_balance_entries
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: margin_accounts_balance_entries"
+    from: margin_account_balance_entries_rows_deposit
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.margin_accounts_balance_entries_withdraw:
+    type: postgres
+    table: margin_accounts_balance_entries
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for snapshot of: margin_accounts_balance_entries"
+    from: margin_account_balance_entries_rows_withdraw
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.lp_account_balance_entries:
+    type: postgres
+    table: lp_account_balance_entries
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: lp_account_balance_entries"
+    from: share_balance_updated_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.order_history_match_orders:
+    type: postgres
+    table: order_history
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: passive_perp_match_order_rows"
+    from: passive_perp_match_order_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.order_history_liquidation_orders:
+    type: postgres
+    table: order_history
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: passive_perp_liquidation_order_rows"
+    from: passive_perp_liquidation_order_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.pool_created:
+    type: postgres
+    table: pool_created
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: pool_created"
+    from: pool_created_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_signature_nonce:
+    type: postgres
+    table: account_signature_nonce
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: account_signature_nonce"
+    from: account_signature_nonce_incremented_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.account_signature_nonce_pool:
+    type: postgres
+    table: account_signature_nonce_pool
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: account_signature_nonce_pool"
+    from: account_signature_nonce_incremented_pool_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.liquidation_configuration:
+    type: postgres
+    table: liquidation_configuration
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: liquidation_configuration"
+    from: liquidation_configuration_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.auto_exchange:
+    type: postgres
+    table: auto_exchange
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: auto_exchange"
+    from: auto_exchange_rows
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+  postgres.auto_exchange_configrations:
+    type: postgres
+    table: auto_exchange_configrations
+    schema: public
+    secret_name: POSTGRES_GOLDSKY_GCP
+    description: "Postgres sink for rows of: auto_exchange_configrations"
+    from: auto_exchange_configuration_snapshot
+    batch_size: 10
+    batch_flush_interval: "100"
+    conditional_upsert_column: unique_id
+use_dedicated_ip: true
+
+

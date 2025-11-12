@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rate-of-change-collector
+  namespace: default  # Change to your namespace
+spec:
+  replicas: 1  # Only need one instance
+  selector:
+    matchLabels:
+      app: rate-of-change-collector
+  template:
+    metadata:
+      labels:
+        app: rate-of-change-collector
+    spec:
+      containers:
+      - name: collector
+        image: your-registry/migration-dashboard:latest  # Use your image
+        command:
+          - ts-node
+          - lib/worker/rate-of-change-collector.ts
+          - continuous
+          - "10"  # Run every 10 minutes
+        env:
+        # Monitoring database connection
+        - name: MONITORING_DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-db-secret
+              key: host
+        - name: MONITORING_DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-db-secret
+              key: port
+        - name: MONITORING_DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-db-secret
+              key: database
+        - name: MONITORING_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-db-secret
+              key: username
+        - name: MONITORING_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: monitoring-db-secret
+              key: password
+        
+        # Source database connection (optional)
+        - name: SOURCE_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secrets
+              key: source-url
+              optional: true
+        
+        # Target database connection (optional)
+        - name: TARGET_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secrets
+              key: target-url
+              optional: true
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "50m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "ps aux | grep -v grep | grep rate-of-change-collector"
+          initialDelaySeconds: 60
+          periodSeconds: 60
