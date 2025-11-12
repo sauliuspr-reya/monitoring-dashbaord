@@ -17,16 +17,30 @@ This application is deployed via Helm and ArgoCD using the `nextjs-app` chart.
 
 ### Docker Build and Push
 
-**Quick build and push:**
+**Quick build and push (amd64):**
 ```bash
 ./scripts/build-and-push.sh [version]
 # Example: ./scripts/build-and-push.sh v1.0.0
+# Builds for linux/amd64 by default
 ```
 
 **Or using Make:**
 ```bash
 make build-push VERSION=v1.0.0
-# Or just: make build-push  # Uses 'latest' tag
+# Or: make build-push  # Uses 'latest' tag
+# Builds for linux/amd64 by default
+```
+
+**Build for different architecture:**
+```bash
+# For amd64 (default)
+./scripts/build-and-push.sh v1.0.0 linux/amd64
+
+# For arm64
+./scripts/build-and-push.sh v1.0.0 linux/arm64
+
+# Using Make
+make build-push VERSION=v1.0.0 PLATFORM=linux/amd64
 ```
 
 **Manual steps:**
@@ -35,8 +49,8 @@ make build-push VERSION=v1.0.0
 gcloud auth login
 gcloud auth configure-docker gcr.io
 
-# 2. Build the image
-docker build -t gcr.io/mainnet-473609/monitoring-dashbaord:latest .
+# 2. Build the image for amd64
+docker build --platform=linux/amd64 -t gcr.io/mainnet-473609/monitoring-dashbaord:latest .
 
 # 3. Push to GCR
 docker push gcr.io/mainnet-473609/monitoring-dashbaord:latest

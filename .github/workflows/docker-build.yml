@@ -56,9 +56,9 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Tag: $VERSION"
 
-      - name: Build Docker image
+      - name: Build Docker image (amd64)
         run: |
-          docker build -t ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }} .
+          docker build --platform=linux/amd64 -t ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }} .
           docker tag ${{ env.IMAGE_REPO }}:${{ steps.tag.outputs.version }} ${{ env.IMAGE_REPO }}:latest
 
       - name: Push Docker image
