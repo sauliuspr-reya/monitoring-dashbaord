@@ -162,7 +162,8 @@ export default async function handler(
       console.log('[tables/all] Trying to get connections from environment/K8s...');
       // Try to get from environment or Kubernetes secret
       try {
-        const connectionsRes = await fetch(`${req.headers.origin || 'http://localhost:3002'}/api/config/connections`);
+        const port = process.env.PORT || '3000';
+        const connectionsRes = await fetch(`${req.headers.origin || `http://localhost:${port}`}/api/config/connections`);
         if (connectionsRes.ok) {
           const connections = await connectionsRes.json();
           sourceConnection = sourceConnection || connections.sourceDbConnection || process.env.SOURCE_DATABASE_URL || null;

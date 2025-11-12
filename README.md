@@ -90,7 +90,19 @@ See [DEPLOYMENT-PVC.md](./DEPLOYMENT-PVC.md) for detailed PVC configuration.
 
 ### Port
 
-The application runs on port **3002**. Health endpoint: `/api/health`
+The application runs on port **3000** by default (configurable via `PORT` environment variable). Health endpoint: `/api/health`
+
+**Configure port:**
+```bash
+# Development
+PORT=3000 npm run dev
+
+# Production
+PORT=3000 npm start
+
+# Docker (via environment variable)
+docker run -e PORT=3000 ...
+```
 
 ## Development
 
