@@ -51,7 +51,7 @@ export default async function handler(
         // Step 2: Create publication on source
         // Escape table names to prevent SQL injection
         const escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
-        const tableList = tables.map(t => {
+        const tableList = tables.map((t: string) => {
           const escaped = t.replace(/"/g, '""');
           return `"${escaped}"`;
         }).join(', ');

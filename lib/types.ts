@@ -54,6 +54,7 @@ export interface TableReplicationMetrics {
 export interface ConflictDetection {
   id: string;
   subscriptionId: string;
+  groupId?: string; // Legacy support for backward compatibility
   tableName: string;
   errorMessage?: string;
   errorType?: string;
@@ -67,6 +68,7 @@ export interface ConflictDetection {
 export interface Alert {
   id: string;
   subscriptionId?: string;
+  groupId?: string; // Legacy support for backward compatibility
   tableName?: string;
   alertType: 'conflict' | 'lag' | 'gap' | 'connection_failure';
   message: string;
@@ -80,14 +82,18 @@ export interface Alert {
 export interface ReplicationStatus {
   subscriptionId: string;
   subscriptionName: string;
+  groupId?: string; // Legacy support for backward compatibility
+  groupName?: string; // Legacy support for backward compatibility
   enabled: boolean;
   subscriptionEnabled: boolean;
   workerRunning: boolean;
+  workerPid?: number;
   lagBytes: number;
   lagSeconds: number;
   slotLagBytes: number;
   status: 'active' | 'stopped' | 'error';
   lastAppliedAt?: Date;
+  lastAppliedLsn?: string;
   tableCount: number;
   tablesWithIssues: number;
   conflicts: number;

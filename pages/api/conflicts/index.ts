@@ -32,7 +32,8 @@ export default async function handler(
       const result = await pool.query(query, params);
       const conflicts: ConflictDetection[] = result.rows.map((row) => ({
         id: row.id,
-        groupId: row.group_id,
+        subscriptionId: row.subscription_id || row.group_id,
+        groupId: row.subscription_id || row.group_id, // Legacy support
         tableName: row.table_name,
         errorMessage: row.error_message,
         errorType: row.error_type,

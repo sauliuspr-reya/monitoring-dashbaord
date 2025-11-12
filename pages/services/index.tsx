@@ -94,14 +94,14 @@ export default function ServicesPage() {
     const lastWriteTime = (() => {
       const times = realStats
         .map(s => s.lastWriteTime)
-        .filter(Boolean)
-        .map(time => typeof time === 'string' ? new Date(time) : (time instanceof Date ? time : new Date(time)));
+        .filter((time): time is Date => time !== null && time !== undefined)
+        .map((time) => time instanceof Date ? time : new Date(time));
       
       if (times.length === 0) return undefined;
       
       return times.sort((a, b) => {
-        const aTime = a instanceof Date ? a.getTime() : 0;
-        const bTime = b instanceof Date ? b.getTime() : 0;
+        const aTime = a.getTime();
+        const bTime = b.getTime();
         return bTime - aTime;
       })[0];
     })();

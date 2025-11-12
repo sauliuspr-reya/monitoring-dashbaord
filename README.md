@@ -76,6 +76,18 @@ Configure via External Secrets or Helm values:
 - `AUTH_PASSWORD` - Basic auth password (required if AUTH_ENABLED is true)
 - `AUTH_ENABLED` - Enable basic auth (default: true)
 
+### Persistent Volume for Backups
+
+The application requires a PVC mounted at `/backup` for storing database backups.
+
+See [DEPLOYMENT-PVC.md](./DEPLOYMENT-PVC.md) for detailed PVC configuration.
+
+**Quick reference:**
+- Mount point: `/backup`
+- Recommended size: 100Gi
+- Access mode: `ReadWriteOnce`
+- Storage class: `standard` or `ssd`
+
 ### Port
 
 The application runs on port **3002**. Health endpoint: `/api/health`

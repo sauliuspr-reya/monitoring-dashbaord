@@ -89,8 +89,8 @@ export default async function handler(
         conflicts: enrichedConflicts,
         summary: {
           total: enrichedConflicts.length,
-          byTable: this.groupByTable(enrichedConflicts),
-          byService: this.groupByService(enrichedConflicts),
+          byTable: groupByTable(enrichedConflicts),
+          byService: groupByService(enrichedConflicts),
           goldskyConflicts: enrichedConflicts.filter((c) => c.isGoldskyTable).length,
         },
       });
