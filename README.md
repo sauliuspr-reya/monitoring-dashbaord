@@ -47,13 +47,13 @@ make build-push VERSION=v1.0.0 PLATFORM=linux/amd64
 ```bash
 # 1. Authenticate with Google Cloud
 gcloud auth login
-gcloud auth configure-docker gcr.io
+gcloud auth configure-docker europe-west3-docker.pkg.dev
 
 # 2. Build the image for amd64
-docker build --platform=linux/amd64 -t gcr.io/mainnet-473609/monitoring-dashbaord:latest .
+docker build --platform=linux/amd64 -t europe-west3-docker.pkg.dev/mainnet-473609/reya/monitoring-dashbaord:latest .
 
-# 3. Push to GCR
-docker push gcr.io/mainnet-473609/monitoring-dashbaord:latest
+# 3. Push to Artifact Registry
+docker push europe-west3-docker.pkg.dev/mainnet-473609/reya/monitoring-dashbaord:latest
 ```
 
 ### Required Environment Variables

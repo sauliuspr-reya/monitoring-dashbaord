@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-# Build and push Docker image to Google Container Registry
+# Build and push Docker image to Google Artifact Registry
 # Usage: ./scripts/build-and-push.sh [version] [platform]
 # Platform defaults to linux/amd64
 
-IMAGE_REPO="gcr.io/mainnet-473609/monitoring-dashbaord"
+IMAGE_REPO="europe-west3-docker.pkg.dev/mainnet-473609/reya/monitoring-dashbaord"
 VERSION="${1:-latest}"
 PLATFORM="${2:-linux/amd64}"
 
@@ -32,8 +32,8 @@ if ! command -v docker &> /dev/null; then
   exit 1
 fi
 
-# Authenticate with GCR (if not already authenticated)
-echo "Checking GCR authentication..."
+# Authenticate with Artifact Registry (if not already authenticated)
+echo "Checking Artifact Registry authentication..."
 if ! gcloud auth print-access-token &> /dev/null; then
   echo "Authenticating with Google Cloud..."
   gcloud auth login
@@ -41,7 +41,7 @@ fi
 
 # Configure Docker to use gcloud as a credential helper
 echo "Configuring Docker credential helper..."
-gcloud auth configure-docker gcr.io --quiet
+gcloud auth configure-docker europe-west3-docker.pkg.dev --quiet
 
 # Build the image for amd64 architecture
 echo ""
@@ -56,7 +56,7 @@ fi
 
 # Push the image
 echo ""
-echo "Pushing image to GCR..."
+echo "Pushing image to Artifact Registry..."
 docker push "${IMAGE_REPO}:${VERSION}"
 
 if [[ "${VERSION}" != "latest" ]]; then
