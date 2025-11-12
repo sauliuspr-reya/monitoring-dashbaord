@@ -17,6 +17,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Ensure public directory exists (Next.js requires it)
+RUN mkdir -p public
+
 # Build Next.js with standalone output
 RUN npm run build
 
@@ -35,7 +38,13 @@ RUN adduser --system --uid 1001 nextjs
 RUN mkdir -p /backup && chown -R nextjs:nodejs /backup
 
 # Copy built application
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Copy public directory if it exists (using bind mount to check and copy conditionally)
+RUN mkdir -p ./public
+RUN --mount=from=builder,source=/app/public,target=/tmp/public-source \
+    if [ -d /tmp/public-source ] && [ "$(ls -A /tmp/public-source 2>/dev/null)" ]; then \
+      cp -r /tmp/public-source/* ./public/ && \
+      chown -R nextjs:nodejs ./public; \
+    fi || true
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
