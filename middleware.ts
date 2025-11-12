@@ -22,6 +22,11 @@ function getAuthConfig() {
 export function middleware(request: NextRequest) {
   const auth = getAuthConfig();
 
+  // Skip auth for health check endpoints
+  if (request.nextUrl.pathname === '/api/healthz' || request.nextUrl.pathname === '/healthz') {
+    return NextResponse.next();
+  }
+
   // Skip auth if disabled
   if (!auth.enabled) {
     return NextResponse.next();
@@ -63,9 +68,10 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
+     * - healthz (health check endpoint)
      * - public files (public folder)
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|healthz|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 };
 

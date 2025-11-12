@@ -3,6 +3,16 @@ const nextConfig = {
   reactStrictMode: true,
   output: 'standalone', // Enable standalone output for Docker
   
+  // Rewrite /healthz to /api/healthz for Kubernetes probes
+  async rewrites() {
+    return [
+      {
+        source: '/healthz',
+        destination: '/api/healthz',
+      },
+    ];
+  },
+  
   // Disable all caching for real-time replication monitoring
   async headers() {
     return [
