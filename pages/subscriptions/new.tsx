@@ -13,6 +13,10 @@ export default function NewSubscription() {
   const [description, setDescription] = useState('');
   const [sourceDbConnection, setSourceDbConnection] = useState('');
   const [targetDbConnection, setTargetDbConnection] = useState('');
+  const [defaultSourceConnection, setDefaultSourceConnection] = useState('');
+  const [defaultTargetConnection, setDefaultTargetConnection] = useState('');
+  const [useCustomConnections, setUseCustomConnections] = useState(false);
+  const [dataCopy, setDataCopy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,8 +57,14 @@ export default function NewSubscription() {
     try {
       const res = await fetch('/api/config/connections');
       const data = await res.json();
-      if (data.sourceDbConnection) setSourceDbConnection(data.sourceDbConnection);
-      if (data.targetDbConnection) setTargetDbConnection(data.targetDbConnection);
+      if (data.sourceDbConnection) {
+        setDefaultSourceConnection(data.sourceDbConnection);
+        setSourceDbConnection(data.sourceDbConnection);
+      }
+      if (data.targetDbConnection) {
+        setDefaultTargetConnection(data.targetDbConnection);
+        setTargetDbConnection(data.targetDbConnection);
+      }
     } catch (err) {
       // Ignore if endpoint doesn't exist
     }
@@ -73,6 +83,27 @@ export default function NewSubscription() {
     setError(null);
     setCreating(true);
 
+    // Use defaults if not using custom connections and fields are empty
+    const finalSourceConnection = useCustomConnections 
+      ? sourceDbConnection 
+      : (sourceDbConnection || defaultSourceConnection);
+    const finalTargetConnection = useCustomConnections 
+      ? targetDbConnection 
+      : (targetDbConnection || defaultTargetConnection);
+
+    // Validate connection strings
+    if (!finalSourceConnection || finalSourceConnection.trim() === '') {
+      setError('Source database connection string is required. Please set SOURCE_DATABASE_URL environment variable or provide a custom connection string.');
+      setCreating(false);
+      return;
+    }
+
+    if (!finalTargetConnection || finalTargetConnection.trim() === '') {
+      setError('Target database connection string is required. Please set TARGET_DATABASE_URL environment variable or provide a custom connection string.');
+      setCreating(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/subscriptions/create', {
         method: 'POST',
@@ -80,16 +111,19 @@ export default function NewSubscription() {
         body: JSON.stringify({
           name,
           description,
-          sourceDbConnection,
-          targetDbConnection,
+          sourceDbConnection: finalSourceConnection,
+          targetDbConnection: finalTargetConnection,
           customTables: selectedTables,
+          dataCopy,
         }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to create subscription');
+        // Show detailed error message if available
+        const errorMsg = data.details || data.hint || data.error || 'Failed to create subscription';
+        throw new Error(errorMsg);
       }
 
       // Redirect to subscription details
@@ -228,38 +262,105 @@ export default function NewSubscription() {
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
               3. Database Connections
             </h2>
+            <div className="mb-4">
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  checked={useCustomConnections}
+                  onChange={(e) => {
+                    setUseCustomConnections(e.target.checked);
+                    if (!e.target.checked) {
+                      // Reset to defaults
+                      setSourceDbConnection(defaultSourceConnection);
+                      setTargetDbConnection(defaultTargetConnection);
+                    }
+                  }}
+                  className="mr-2"
+                />
+                <span className="text-sm text-gray-700">
+                  Use custom connection strings (defaults from environment variables)
+                </span>
+              </label>
+            </div>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Source Database (RDS) Connection String *
+                  {!useCustomConnections && defaultSourceConnection && (
+                    <span className="text-gray-500 ml-1">(using SOURCE_DATABASE_URL)</span>
+                  )}
                 </label>
                 <input
                   type="password"
                   value={sourceDbConnection}
                   onChange={(e) => setSourceDbConnection(e.target.value)}
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder="postgresql://user:password@host:port/database"
+                  disabled={!useCustomConnections && !!defaultSourceConnection}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  placeholder={defaultSourceConnection ? "Using SOURCE_DATABASE_URL from environment" : "postgresql://user:password@host:port/database"}
                 />
                 <p className="mt-1 text-xs text-gray-500">
-                  Password will be hidden for security
+                  {!useCustomConnections && defaultSourceConnection
+                    ? 'Using default connection from environment variables'
+                    : 'Password will be hidden for security'}
                 </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Target Database (Cloud SQL) Connection String *
+                  {!useCustomConnections && defaultTargetConnection && (
+                    <span className="text-gray-500 ml-1">(using TARGET_DATABASE_URL)</span>
+                  )}
                 </label>
                 <input
                   type="password"
                   value={targetDbConnection}
                   onChange={(e) => setTargetDbConnection(e.target.value)}
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder="postgresql://user:password@host:port/database"
+                  disabled={!useCustomConnections && !!defaultTargetConnection}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  placeholder={defaultTargetConnection ? "Using TARGET_DATABASE_URL from environment" : "postgresql://user:password@host:port/database"}
                 />
                 <p className="mt-1 text-xs text-gray-500">
-                  Password will be hidden for security
+                  {!useCustomConnections && defaultTargetConnection
+                    ? 'Using default connection from environment variables'
+                    : 'Password will be hidden for security'}
                 </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Data Copy Option */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">
+              4. Replication Settings
+            </h2>
+            <div className="space-y-4">
+              <div>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={dataCopy}
+                    onChange={(e) => setDataCopy(e.target.checked)}
+                    className="mr-2"
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    Copy existing data (copy_data = true)
+                  </span>
+                </label>
+                <p className="mt-1 text-xs text-gray-500 ml-6">
+                  When enabled, PostgreSQL will copy existing data from the source to the target during subscription creation.
+                  When disabled (default), only new changes will be replicated.
+                </p>
+                <div className="mt-2 ml-6">
+                  <span className={`inline-block px-2 py-1 text-xs rounded ${
+                    dataCopy 
+                      ? 'bg-green-100 text-green-800' 
+                      : 'bg-gray-100 text-gray-800'
+                  }`}>
+                    data_copy = {dataCopy ? 'true' : 'false'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

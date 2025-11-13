@@ -84,11 +84,7 @@ export default async function handler(
         // Remove from monitoring database
         await monitoringPool.query(`
           DELETE FROM subscriptions WHERE name = 'reya_replication' OR subscription_name = 'reya_replication'
-        `).catch(() =>
-          monitoringPool.query(`
-            DELETE FROM replication_groups WHERE name = 'reya_replication' OR subscription_name = 'reya_replication'
-          `)
-        );
+        `);
         results.dropped.monitoring = true;
       } catch (error: any) {
         results.errors.push(`Failed to drop old replication: ${error.message}`);
@@ -199,48 +195,26 @@ export default async function handler(
           }
 
           // Save to monitoring database
-          let monitoringResult;
-          try {
-            monitoringResult = await monitoringPool.query(`
-              INSERT INTO subscriptions (
-                name, description, source_db_connection, target_db_connection,
-                publication_name, subscription_name, slot_name, enabled
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-              ON CONFLICT (subscription_name) DO UPDATE SET
-                name = EXCLUDED.name,
-                description = EXCLUDED.description,
-                enabled = EXCLUDED.enabled
-              RETURNING *
-            `, [
-              group.name,
-              group.description,
-              sourceDbConnection,
-              targetDbConnection,
-              publicationName,
-              subscriptionName,
-              slotName,
-              true,
-            ]);
-          } catch (error: any) {
-            // Try with replication_groups table (backward compatibility)
-            monitoringResult = await monitoringPool.query(`
-              INSERT INTO replication_groups (
-                name, description, source_db_connection, target_db_connection,
-                publication_name, subscription_name, slot_name, enabled
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-              ON CONFLICT DO NOTHING
-              RETURNING *
-            `, [
-              group.name,
-              group.description,
-              sourceDbConnection,
-              targetDbConnection,
-              publicationName,
-              subscriptionName,
-              slotName,
-              true,
-            ]);
-          }
+          const monitoringResult = await monitoringPool.query(`
+            INSERT INTO subscriptions (
+              name, description, source_db_connection, target_db_connection,
+              publication_name, subscription_name, slot_name, enabled
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (subscription_name) DO UPDATE SET
+              name = EXCLUDED.name,
+              description = EXCLUDED.description,
+              enabled = EXCLUDED.enabled
+            RETURNING *
+          `, [
+            group.name,
+            group.description,
+            sourceDbConnection,
+            targetDbConnection,
+            publicationName,
+            subscriptionName,
+            slotName,
+            true,
+          ]);
 
           // Only save table list if we successfully created the subscription record
           if (monitoringResult && monitoringResult.rows.length > 0) {
@@ -253,14 +227,7 @@ export default async function handler(
                   subscription_id, table_name, schema_name, enabled
                 ) VALUES ($1, $2, 'public', true)
                 ON CONFLICT DO NOTHING
-              `, [subscriptionId, table]).catch(() =>
-                monitoringPool.query(`
-                  INSERT INTO replication_group_tables (
-                    group_id, table_name, schema_name, enabled
-                  ) VALUES ($1, $2, 'public', true)
-                  ON CONFLICT DO NOTHING
-                `, [subscriptionId, table])
-              );
+              `, [subscriptionId, table]);
             }
           }
 

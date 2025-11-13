@@ -17,14 +17,10 @@ export default async function handler(
   try {
     const pool = getDbPool();
     
-    // Get subscription details (support both old and new table names)
+    // Get subscription details
     const groupResult = await pool.query(`
       SELECT * FROM subscriptions WHERE id = $1
-    `, [id]).catch(() => 
-      pool.query(`
-        SELECT * FROM replication_groups WHERE id = $1
-      `, [id])
-    );
+    `, [id]);
 
     if (groupResult.rows.length === 0) {
       return res.status(404).json({ error: 'Group not found' });

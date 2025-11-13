@@ -119,13 +119,7 @@ export default async function handler(
       SELECT id, name, publication_name, source_db_connection, target_db_connection
       FROM subscriptions
       ORDER BY name
-    `).catch(() =>
-      pool.query(`
-        SELECT id, name, publication_name, source_db_connection, target_db_connection
-        FROM replication_groups
-        ORDER BY name
-      `)
-    );
+    `);
 
     const subscriptions = subscriptionsResult.rows;
     console.log(`[tables/all] Found ${subscriptions.length} subscriptions in monitoring DB`);
@@ -173,9 +167,9 @@ export default async function handler(
         } catch (err) {
         console.log('[tables/all] Failed to fetch /api/config/connections, using env vars');
         // Fallback to environment variables
-        // Check both TARGET_DATABASE_URL and DESTINATION_DATABASE_URL (some setups use different names)
+        // Use TARGET_DATABASE_URL environment variable
         sourceConnection = sourceConnection || process.env.SOURCE_DATABASE_URL || null;
-        targetConnection = targetConnection || process.env.TARGET_DATABASE_URL || process.env.DESTINATION_DATABASE_URL || null;
+        targetConnection = targetConnection || process.env.TARGET_DATABASE_URL || null;
       }
     }
     
@@ -184,15 +178,13 @@ export default async function handler(
       sourceConnection = process.env.SOURCE_DATABASE_URL || null;
     }
     if (!targetConnection) {
-      targetConnection = process.env.TARGET_DATABASE_URL || process.env.DESTINATION_DATABASE_URL || null;
+      targetConnection = process.env.TARGET_DATABASE_URL || null;
     }
     
     // Debug: Check what's actually in process.env
     console.log('[tables/all] Environment variables check:');
     console.log(`  process.env.SOURCE_DATABASE_URL: ${process.env.SOURCE_DATABASE_URL ? 'SET (' + process.env.SOURCE_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
     console.log(`  process.env.TARGET_DATABASE_URL: ${process.env.TARGET_DATABASE_URL ? 'SET (' + process.env.TARGET_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
-    console.log(`  process.env.DESTINATION_DATABASE_URL: ${process.env.DESTINATION_DATABASE_URL ? 'SET (' + process.env.DESTINATION_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
-    console.log(`  Using DESTINATION_DATABASE_URL as fallback: ${process.env.DESTINATION_DATABASE_URL && !process.env.TARGET_DATABASE_URL ? 'YES' : 'NO'}`);
     
     // Log what we found (hide passwords)
     console.log('[tables/all] Connection status:');
@@ -793,11 +785,7 @@ export default async function handler(
                     try {
                       const subCheck = await monitoringPool.query(`
                         SELECT id FROM subscriptions LIMIT 1
-                      `).catch(() => 
-                        monitoringPool.query(`
-                          SELECT id FROM replication_groups LIMIT 1
-                        `).catch(() => ({ rows: [] }))
-                      );
+                      `).catch(() => ({ rows: [] }));
                       
                       if (subCheck.rows && subCheck.rows.length > 0) {
                         subscriptionIdForMetrics = subCheck.rows[0].id;

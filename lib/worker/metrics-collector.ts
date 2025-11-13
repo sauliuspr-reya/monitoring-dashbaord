@@ -44,9 +44,9 @@ export class MetricsCollector {
     const alertingService = new AlertingService();
 
     try {
-      // Get all enabled groups
+      // Get all enabled subscriptions
       const groupsResult = await pool.query(`
-        SELECT * FROM replication_groups WHERE enabled = true
+        SELECT * FROM subscriptions WHERE enabled = true
       `);
 
       for (const group of groupsResult.rows) {

@@ -63,14 +63,12 @@ export default async function handler(
       return res.status(400).json({ error: 'Backup filename is required' });
     }
 
-    // Use DESTINATION_DATABASE_URL or TARGET_DATABASE_URL as default if not provided
-    const targetConnectionString = connectionString || 
-      process.env.DESTINATION_DATABASE_URL || 
-      process.env.TARGET_DATABASE_URL;
+    // Use TARGET_DATABASE_URL as default if not provided
+    const targetConnectionString = connectionString || process.env.TARGET_DATABASE_URL;
 
     if (!targetConnectionString) {
       return res.status(400).json({ 
-        error: 'Connection string is required. Provide connectionString in request or set DESTINATION_DATABASE_URL/TARGET_DATABASE_URL environment variable.' 
+        error: 'Connection string is required. Provide connectionString in request or set TARGET_DATABASE_URL environment variable.' 
       });
     }
 

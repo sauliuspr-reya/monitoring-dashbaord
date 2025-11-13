@@ -95,11 +95,7 @@ export default async function handler(
       // Get specific subscription
       const groupResult = await pool.query(`
         SELECT * FROM subscriptions WHERE id = $1
-      `, [groupId]).catch(() => 
-        pool.query(`
-          SELECT * FROM replication_groups WHERE id = $1
-        `, [groupId])
-      );
+      `, [groupId]);
 
       if (groupResult.rows.length === 0) {
         return res.status(404).json({ error: 'Group not found' });
@@ -118,14 +114,7 @@ export default async function handler(
         FROM subscriptions
         ORDER BY name
         LIMIT 1
-      `).catch(() =>
-        pool.query(`
-          SELECT id, name, source_db_connection, target_db_connection
-          FROM replication_groups
-          ORDER BY name
-          LIMIT 1
-        `)
-      );
+      `);
 
       if (subscriptionsResult.rows.length === 0) {
         // Try environment variables as fallback

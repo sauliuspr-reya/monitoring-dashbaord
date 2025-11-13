@@ -11,7 +11,24 @@ export default async function handler(
     return res.status(405).json({ error: `Method ${req.method} not allowed` });
   }
 
-  const { id } = req.query;
+  const { id, timeframe } = req.query;
+  
+  // Parse timeframe: '1m', '5m', '10m', '1h', '6h', '24h', etc.
+  // Default to 1 hour if not specified
+  let timeframeMinutes = 60; // default 1 hour
+  if (timeframe) {
+    const timeframeStr = String(timeframe).toLowerCase();
+    if (timeframeStr.endsWith('m')) {
+      timeframeMinutes = parseInt(timeframeStr.slice(0, -1)) || 60;
+    } else if (timeframeStr.endsWith('h')) {
+      timeframeMinutes = (parseInt(timeframeStr.slice(0, -1)) || 1) * 60;
+    } else if (timeframeStr.endsWith('d')) {
+      timeframeMinutes = (parseInt(timeframeStr.slice(0, -1)) || 1) * 24 * 60;
+    }
+  }
+  
+  // Minimum 1 minute, maximum 7 days
+  timeframeMinutes = Math.max(1, Math.min(timeframeMinutes, 7 * 24 * 60));
 
   try {
     const pool = getDbPool();
@@ -19,11 +36,7 @@ export default async function handler(
     // Get subscription details
     const subResult = await pool.query(`
       SELECT * FROM subscriptions WHERE id = $1
-    `, [id]).catch(() =>
-      pool.query(`
-        SELECT * FROM replication_groups WHERE id = $1
-      `, [id])
-    );
+    `, [id]);
 
     if (subResult.rows.length === 0) {
       return res.status(404).json({ error: 'Subscription not found' });
@@ -161,7 +174,8 @@ export default async function handler(
             
             const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
             
-            // Get previous row count (from last 5 minutes to 24 hours ago to avoid comparing with current)
+            // Get previous row count using the selected timeframe
+            // Compare with data from at least 1 minute ago to avoid comparing with current measurement
             // Try both with and without schema prefix for table name matching
             const historicalResult = await pool.query(`
               SELECT 
@@ -175,8 +189,8 @@ export default async function handler(
                   OR table_name = $3
                   OR REGEXP_REPLACE(table_name, '^[^.]+\.', '') = $2
                 )
-                AND timestamp < NOW() - INTERVAL '5 minutes'
-                AND timestamp > NOW() - INTERVAL '24 hours'
+                AND timestamp < NOW() - INTERVAL '1 minute'
+                AND timestamp > NOW() - INTERVAL '${timeframeMinutes} minutes'::text
                 AND source_row_count IS NOT NULL
                 AND source_row_count > 0
               ORDER BY timestamp DESC

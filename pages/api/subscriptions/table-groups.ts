@@ -19,11 +19,7 @@ export default async function handler(
       const pool = getDbPool();
       const result = await pool.query(`
         SELECT * FROM subscriptions WHERE id = $1
-      `, [subscriptionId]).catch(() =>
-        pool.query(`
-          SELECT * FROM replication_groups WHERE id = $1
-        `, [subscriptionId])
-      );
+      `, [subscriptionId]);
 
       if (result.rows.length === 0) {
         return res.status(404).json({ error: 'Subscription not found' });

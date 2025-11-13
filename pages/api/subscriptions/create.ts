@@ -17,11 +17,53 @@ export default async function handler(
       sourceDbConnection,
       targetDbConnection,
       customTables, // Tables to replicate
+      dataCopy = false, // Whether to copy existing data
     } = req.body;
 
-    if (!name || !sourceDbConnection || !targetDbConnection) {
+    // Fall back to environment variables if connection strings are not provided or empty
+    const finalSourceConnection = (sourceDbConnection && sourceDbConnection.trim() !== '') 
+      ? sourceDbConnection 
+      : (process.env.SOURCE_DATABASE_URL || '');
+    const finalTargetConnection = (targetDbConnection && targetDbConnection.trim() !== '') 
+      ? targetDbConnection 
+      : (process.env.TARGET_DATABASE_URL || '');
+
+    if (!name) {
       return res.status(400).json({
-        error: 'Missing required fields: name, sourceDbConnection, targetDbConnection',
+        error: 'Missing required field: name',
+        details: 'Please provide a name for the subscription.',
+      });
+    }
+
+    if (!finalSourceConnection || finalSourceConnection.trim() === '') {
+      return res.status(400).json({
+        error: 'Source database connection string is required',
+        details: 'Please set SOURCE_DATABASE_URL environment variable or provide a custom connection string.',
+      });
+    }
+
+    if (!finalTargetConnection || finalTargetConnection.trim() === '') {
+      return res.status(400).json({
+        error: 'Target database connection string is required',
+        details: 'Please set TARGET_DATABASE_URL environment variable or provide a custom connection string.',
+      });
+    }
+
+    // Basic validation: connection strings should look like PostgreSQL connection strings
+    const postgresUrlPattern = /^postgres(ql)?:\/\//i;
+    const postgresConnPattern = /^(host|user|password|dbname|port)=/i;
+    
+    if (!postgresUrlPattern.test(finalSourceConnection) && !postgresConnPattern.test(finalSourceConnection)) {
+      return res.status(400).json({
+        error: 'Invalid source database connection string format',
+        details: 'Connection string should be a PostgreSQL URL (postgresql://...) or connection string (host=... user=...).',
+      });
+    }
+
+    if (!postgresUrlPattern.test(finalTargetConnection) && !postgresConnPattern.test(finalTargetConnection)) {
+      return res.status(400).json({
+        error: 'Invalid target database connection string format',
+        details: 'Connection string should be a PostgreSQL URL (postgresql://...) or connection string (host=... user=...).',
       });
     }
 
@@ -38,27 +80,86 @@ export default async function handler(
     const slotName = `${sanitizedName}_slot`;
 
     // Create connection pools
-    const sourcePool = createSourceTargetPool(sourceDbConnection);
-    const targetPool = createSourceTargetPool(targetDbConnection);
+    let sourcePool, targetPool;
+    try {
+      sourcePool = createSourceTargetPool(finalSourceConnection);
+      targetPool = createSourceTargetPool(finalTargetConnection);
+    } catch (poolError: any) {
+      return res.status(400).json({
+        error: 'Failed to create database connection pools',
+        details: poolError.message || 'Invalid connection string format',
+      });
+    }
 
     try {
+      // Test connections before proceeding
+      try {
+        await sourcePool.query('SELECT 1');
+      } catch (sourceError: any) {
+        await sourcePool.end().catch(() => {});
+        await targetPool.end().catch(() => {});
+        return res.status(401).json({
+          error: 'Failed to connect to source database',
+          details: sourceError.message || 'Authentication failed. Please check your source database connection string and credentials.',
+          hint: sourceError.message?.includes('password authentication failed') 
+            ? 'Password authentication failed. Please verify the username and password in your source database connection string.'
+            : 'Please verify the source database connection string is correct and the database is accessible.',
+        });
+      }
+
+      try {
+        await targetPool.query('SELECT 1');
+      } catch (targetError: any) {
+        await sourcePool.end().catch(() => {});
+        await targetPool.end().catch(() => {});
+        return res.status(401).json({
+          error: 'Failed to connect to target database',
+          details: targetError.message || 'Authentication failed. Please check your target database connection string and credentials.',
+          hint: targetError.message?.includes('password authentication failed')
+            ? 'Password authentication failed. Please verify the username and password in your target database connection string.'
+            : 'Please verify the target database connection string is correct and the database is accessible.',
+        });
+      }
+
       // Step 1: Check if publication already exists
       const pubCheck = await sourcePool.query(`
         SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
       `, [publicationName]);
 
+      const escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
+      const tableList = tables.map((t: string) => {
+        const escaped = t.replace(/"/g, '""');
+        return `"${escaped}"`;
+      }).join(', ');
+
       if (pubCheck.rows[0].count === '0') {
         // Step 2: Create publication on source
-        // Escape table names to prevent SQL injection
-        const escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
-        const tableList = tables.map((t: string) => {
-          const escaped = t.replace(/"/g, '""');
-          return `"${escaped}"`;
-        }).join(', ');
-        
         await sourcePool.query(`
           CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
         `);
+      } else {
+        // Publication exists - check if all tables are in it
+        const pubTablesResult = await sourcePool.query(`
+          SELECT tablename FROM pg_publication_tables WHERE pubname = $1
+        `, [publicationName]);
+        
+        const existingPubTables = pubTablesResult.rows.map((r: any) => r.tablename);
+        const missingTables = tables.filter((t: string) => !existingPubTables.includes(t));
+        
+        // Add any missing tables to the existing publication
+        if (missingTables.length > 0) {
+          for (const table of missingTables) {
+            const escapedTable = `"${table.replace(/"/g, '""')}"`;
+            try {
+              await sourcePool.query(`
+                ALTER PUBLICATION ${escapedPubName} ADD TABLE ${escapedTable}
+              `);
+            } catch (alterError: any) {
+              console.warn(`Failed to add table ${table} to publication:`, alterError.message);
+              // Continue with other tables
+            }
+          }
+        }
       }
 
       // Step 3: Check if subscription already exists
@@ -66,20 +167,34 @@ export default async function handler(
         SELECT COUNT(*) as count FROM pg_subscription WHERE subname = $1
       `, [subscriptionName]);
 
-      if (subCheck.rows[0].count === '0') {
-        // Step 4: Check if slot exists on source
-        const slotCheck = await sourcePool.query(`
-          SELECT COUNT(*) as count FROM pg_replication_slots WHERE slot_name = $1
-        `, [slotName]);
+      if (subCheck.rows[0].count !== '0') {
+        await sourcePool.end();
+        await targetPool.end();
+        return res.status(409).json({
+          error: 'Subscription already exists',
+          details: `Subscription '${subscriptionName}' already exists on target database`,
+          hint: 'Drop the existing subscription first or use a different name',
+        });
+      }
 
-        const createSlot = slotCheck.rows[0].count === '0';
+      // Step 4: Check if slot exists on source
+      const slotCheck = await sourcePool.query(`
+        SELECT COUNT(*) as count FROM pg_replication_slots WHERE slot_name = $1
+      `, [slotName]);
+
+      const createSlot = slotCheck.rows[0].count === '0';
+      
+      // If slot exists but subscription doesn't, warn user
+      if (!createSlot) {
+        console.warn(`Replication slot '${slotName}' already exists on source. Will use existing slot.`);
+      }
 
         // Step 5: Create subscription on target
         // Parse source connection for subscription connection string
         // Handle both URL format and connection string format
         let connString: string;
         try {
-          const sourceUrl = new URL(sourceDbConnection);
+          const sourceUrl = new URL(finalSourceConnection);
           const sourceHost = sourceUrl.hostname;
           const sourcePort = sourceUrl.port || '5432';
           const sourceUser = decodeURIComponent(sourceUrl.username);
@@ -91,7 +206,7 @@ export default async function handler(
           connString = `host=${sourceHost} port=${sourcePort} dbname=${sourceDb} user=${sourceUser} password='${escapedPass}'`;
         } catch (urlError) {
           // If it's not a URL, assume it's already a connection string
-          connString = sourceDbConnection;
+          connString = finalSourceConnection;
         }
 
         // Escape identifiers to prevent SQL injection
@@ -108,7 +223,7 @@ export default async function handler(
           WITH (
             create_slot = ${createSlot},
             slot_name = '${escapedSlotName}',
-            copy_data = false,
+            copy_data = ${dataCopy ? 'true' : 'false'},
             enabled = true,
             streaming = parallel
           )
@@ -120,36 +235,20 @@ export default async function handler(
       const result = await monitoringPool.query(`
         INSERT INTO subscriptions (
           name, description, source_db_connection, target_db_connection,
-          publication_name, subscription_name, slot_name, enabled
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          publication_name, subscription_name, slot_name, enabled, data_copy
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *
       `, [
         name,
         description || `Subscription with ${tables.length} table${tables.length !== 1 ? 's' : ''}`,
-        sourceDbConnection,
-        targetDbConnection,
+        finalSourceConnection,
+        finalTargetConnection,
         publicationName,
         subscriptionName,
         slotName,
         true,
-      ]).catch(() =>
-        monitoringPool.query(`
-          INSERT INTO replication_groups (
-            name, description, source_db_connection, target_db_connection,
-            publication_name, subscription_name, slot_name, enabled
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          RETURNING *
-        `, [
-          name,
-          description || `Subscription with ${tables.length} table${tables.length !== 1 ? 's' : ''}`,
-          sourceDbConnection,
-          targetDbConnection,
-          publicationName,
-          subscriptionName,
-          slotName,
-          true,
-        ])
-      );
+        dataCopy,
+      ]);
 
       // Step 7: Save table list
       const subscriptionId = result.rows[0].id;
@@ -159,14 +258,7 @@ export default async function handler(
             subscription_id, table_name, schema_name, enabled
           ) VALUES ($1, $2, 'public', true)
           ON CONFLICT DO NOTHING
-        `, [subscriptionId, table]).catch(() =>
-          monitoringPool.query(`
-            INSERT INTO replication_group_tables (
-              group_id, table_name, schema_name, enabled
-            ) VALUES ($1, $2, 'public', true)
-            ON CONFLICT DO NOTHING
-          `, [subscriptionId, table])
-        );
+        `, [subscriptionId, table]);
       }
 
       res.status(201).json({
@@ -184,9 +276,25 @@ export default async function handler(
     }
   } catch (error: any) {
     console.error('Error creating subscription:', error);
+    
+    // Provide more helpful error messages for common issues
+    let errorMessage = error.message || 'Failed to create subscription';
+    let errorDetails = error.detail || error.message;
+    
+    if (error.message?.includes('password authentication failed')) {
+      errorMessage = 'Database authentication failed';
+      errorDetails = 'The username or password in your connection string is incorrect. Please verify your database credentials.';
+    } else if (error.message?.includes('connection refused') || error.message?.includes('ECONNREFUSED')) {
+      errorMessage = 'Database connection refused';
+      errorDetails = 'Could not connect to the database. Please verify the host, port, and that the database server is running.';
+    } else if (error.message?.includes('timeout')) {
+      errorMessage = 'Database connection timeout';
+      errorDetails = 'Connection to the database timed out. Please check network connectivity and firewall settings.';
+    }
+    
     res.status(500).json({
-      error: error.message || 'Failed to create subscription',
-      details: error.detail,
+      error: errorMessage,
+      details: errorDetails,
     });
   }
 }

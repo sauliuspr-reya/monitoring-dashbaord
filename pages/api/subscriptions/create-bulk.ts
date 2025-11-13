@@ -167,24 +167,7 @@ export default async function handler(
           subscriptionName,
           slotName,
           true,
-        ]).catch(() =>
-          monitoringPool.query(`
-            INSERT INTO replication_groups (
-              name, description, source_db_connection, target_db_connection,
-              publication_name, subscription_name, slot_name, enabled
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING *
-          `, [
-            name,
-            description || `Bulk subscription for ${tables.length} tables without active writers`,
-            sourceDbConnection,
-            targetDbConnection,
-            publicationName,
-            subscriptionName,
-            slotName,
-            true,
-          ])
-        );
+        ]);
 
         subscriptionId = result.rows[0].id;
 
@@ -195,14 +178,7 @@ export default async function handler(
               subscription_id, table_name, schema_name, enabled
             ) VALUES ($1, $2, 'public', true)
             ON CONFLICT DO NOTHING
-          `, [subscriptionId, table]).catch(() =>
-            monitoringPool.query(`
-              INSERT INTO replication_group_tables (
-                group_id, table_name, schema_name, enabled
-              ) VALUES ($1, $2, 'public', true)
-              ON CONFLICT DO NOTHING
-            `, [subscriptionId, table])
-          );
+          `, [subscriptionId, table]);
         }
       } catch (error: any) {
         results.errors.push(`Failed to save to monitoring database: ${error.message}`);

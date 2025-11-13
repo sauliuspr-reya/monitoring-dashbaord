@@ -85,25 +85,47 @@ export class ApplicationTrackingService {
         const historical = historicalStats.filter(s => s.applicationName === conn.applicationName);
         
         if (activity && activity.length > 0) {
-          // Service has write activity - use the activity data
+          // Service has write activity - use the activity data as primary source
           for (const act of activity) {
             const key = `${conn.applicationName}:${act.table}:${act.operation}`;
-            // Merge with historical count if available
-            const histCount = historical.find(h => h.table === act.table && h.operation === act.operation)?.count || 0;
+            // Find matching historical stat for this table/operation
+            const histStat = historical.find(h => h.table === act.table && h.operation === act.operation);
+            
+            // Use activity data as primary (has lastWriteTime), but add historical counts
+            // Historical counts are cumulative, so we use the larger value (historical is more accurate for totals)
+            const totalCount = histStat ? Math.max(act.count, histStat.count) : act.count;
+            
             statsMap.set(key, {
               ...act,
-              count: Math.max(act.count, histCount),
+              count: totalCount,
+              // Preserve lastWriteTime from activity (most recent)
+              lastWriteTime: act.lastWriteTime,
+              // Use connection info as primary source (most accurate for current state)
+              // Note: clientAddr comes from pg_stat_activity and represents the client IP
+              // connecting to the database. This is the actual source IP, not a proxy.
               username: conn.username || act.username,
               clientAddr: conn.clientAddr || act.clientAddr,
             });
           }
         } else if (historical.length > 0) {
           // No current activity but has historical data
+          // Try to get lastWriteTime from any recent activity for this service
+          const recentActivity = writeActivitySummary.get(conn.applicationName);
+          const mostRecentTime = recentActivity && recentActivity.length > 0
+            ? recentActivity
+                .map(a => a.lastWriteTime)
+                .filter((t): t is Date => t !== null && t !== undefined)
+                .sort((a, b) => b.getTime() - a.getTime())[0]
+            : undefined;
+          
           for (const hist of historical) {
             const key = `${conn.applicationName}:${hist.table}:${hist.operation}`;
             statsMap.set(key, {
               ...hist,
               applicationName: conn.applicationName, // Override with actual connection name
+              // Use most recent time if available, otherwise undefined (will show as "Never")
+              lastWriteTime: mostRecentTime || hist.lastWriteTime,
+              // Prefer connection info, fallback to historical
               username: conn.username || hist.username,
               clientAddr: conn.clientAddr || hist.clientAddr,
             });
@@ -118,6 +140,7 @@ export class ApplicationTrackingService {
             count: 0,
             username: conn.username,
             clientAddr: conn.clientAddr,
+            // No lastWriteTime for placeholder entries
           });
         }
       }
@@ -138,6 +161,9 @@ export class ApplicationTrackingService {
         // Get historical stats for this service
         const historical = historicalStats.filter(s => s.applicationName === serviceName);
         if (historical.length > 0) {
+          // Try to find connection info for this service (might be from a different time window)
+          const connectionInfo = allConnections.find(c => c.applicationName === serviceName);
+          
           for (const hist of historical) {
             const key = `${serviceName}:${hist.table}:${hist.operation}`;
             // Only add if we don't already have it
@@ -145,6 +171,11 @@ export class ApplicationTrackingService {
               statsMap.set(key, {
                 ...hist,
                 applicationName: serviceName,
+                // Use connection info if available, otherwise use historical data
+                username: connectionInfo?.username || hist.username,
+                clientAddr: connectionInfo?.clientAddr || hist.clientAddr,
+                // No lastWriteTime available for historical-only entries (will show as "Never")
+                lastWriteTime: hist.lastWriteTime,
               });
             }
           }
@@ -271,13 +302,31 @@ export class ApplicationTrackingService {
           activityMap.set(appName, []);
         }
         
-        for (const table of tables.slice(0, 1)) { // Just first table to keep it simple
+        // Process tables - for write operations, typically only one table is involved
+        // But handle all tables if multiple are detected (edge case)
+        const tablesToProcess = tables.length > 0 ? tables : [];
+        if (tablesToProcess.length === 0) {
+          // No table extracted - skip this query (might be malformed or not a write)
+          continue;
+        }
+        
+        for (const table of tablesToProcess.slice(0, 1)) { // Limit to first table for write ops
+          // Validate table name
+          if (!table || table.length === 0 || table === '<no-recent-writes>') {
+            continue;
+          }
+          
           for (const op of operations as ('INSERT' | 'UPDATE' | 'DELETE')[]) {
+            if (!op) continue;
+            
             const existing = activityMap.get(appName)!.find(s => s.table === table && s.operation === op);
             if (existing) {
               existing.count++;
-              if (row.query_start && (!existing.lastWriteTime || new Date(row.query_start) > existing.lastWriteTime)) {
-                existing.lastWriteTime = new Date(row.query_start);
+              if (row.query_start) {
+                const queryTime = new Date(row.query_start);
+                if (!existing.lastWriteTime || queryTime > existing.lastWriteTime) {
+                  existing.lastWriteTime = queryTime;
+                }
               }
             } else {
               activityMap.get(appName)!.push({
@@ -321,6 +370,8 @@ export class ApplicationTrackingService {
       // Strategy 1: Use userid from pg_stat_statements to match with pg_stat_activity
       // This is more reliable than query pattern matching
       // Get a map of (userid, dbid) -> application_name from current activity
+      // IMPORTANT: Map by (username, application_name) pair, not just username
+      // Multiple services can use the same username, so we need to be more specific
       const userAppMapResult = await targetPool.query(`
         SELECT DISTINCT
           psa.usename,
@@ -345,18 +396,26 @@ export class ApplicationTrackingService {
           )
       `);
 
-      // Create maps: username -> application_name, and also query pattern -> application_name
-      const usernameToApp = new Map<string, { appName: string; clientAddr?: string }>();
+      // Create maps: 
+      // 1. (username, application_name) -> clientAddr (most specific and reliable)
+      // 2. username -> application_name[] (fallback, but less reliable)
+      // 3. query pattern -> application_name
+      const userAppToAddr = new Map<string, string | undefined>(); // key: "username:appName"
+      const usernameToApps = new Map<string, Set<string>>(); // username -> Set of app names
       const queryPatternToApp = new Map<string, { appName: string; username?: string; clientAddr?: string }>();
       
       for (const row of userAppMapResult.rows) {
         if (this.shouldExcludeApplication(row.application_name)) continue;
         
-        // Map username to application_name (most reliable)
-        usernameToApp.set(row.usename, {
-          appName: row.application_name,
-          clientAddr: row.client_addr || undefined,
-        });
+        // Map (username, application_name) pair to clientAddr (most specific)
+        const key = `${row.usename}:${row.application_name}`;
+        userAppToAddr.set(key, row.client_addr || undefined);
+        
+        // Also track username -> apps mapping for fallback
+        if (!usernameToApps.has(row.usename)) {
+          usernameToApps.set(row.usename, new Set());
+        }
+        usernameToApps.get(row.usename)!.add(row.application_name);
       }
 
       // Strategy 2: Also get query patterns from current activity for better matching
@@ -449,50 +508,91 @@ export class ApplicationTrackingService {
         let username: string | undefined = row.usename || undefined;
         let clientAddr: string | undefined = undefined;
 
-        // Strategy 1: Match by username (most reliable)
-        if (username && usernameToApp.has(username)) {
-          const appInfo = usernameToApp.get(username)!;
+        // Strategy 1: Match by (username, application_name) pair from pg_stat_activity
+        // This requires matching the username from pg_stat_statements with current activity
+        // Since pg_stat_statements doesn't have application_name, we need to infer it
+        // We'll try to match by query pattern first, then fall back to username-only matching
+        
+        // Strategy 1a: Match by query pattern (most reliable when available)
+        const normalized = this.normalizeQuery(row.query);
+        if (normalized && queryPatternToApp.has(normalized)) {
+          const appInfo = queryPatternToApp.get(normalized)!;
           appName = appInfo.appName;
-          clientAddr = appInfo.clientAddr;
+          username = appInfo.username || username;
+          // Use IP from the same application_name
+          if (username && appName) {
+            const key = `${username}:${appName}`;
+            clientAddr = userAppToAddr.get(key);
+          }
+          if (!clientAddr) {
+            clientAddr = appInfo.clientAddr;
+          }
         }
 
-        // Strategy 2: Match by query pattern (fallback)
-        if (!appName) {
-          const normalized = this.normalizeQuery(row.query);
-          if (normalized && queryPatternToApp.has(normalized)) {
-            const appInfo = queryPatternToApp.get(normalized)!;
-            appName = appInfo.appName;
-            username = appInfo.username || username;
-            clientAddr = appInfo.clientAddr;
+        // Strategy 1b: Match by username, but only if there's a single app for that username
+        // This is less reliable but better than nothing
+        if (!appName && username) {
+          const appsForUser = usernameToApps.get(username);
+          if (appsForUser && appsForUser.size === 1) {
+            // Only one app for this username - safe to use
+            appName = Array.from(appsForUser)[0];
+            const key = `${username}:${appName}`;
+            clientAddr = userAppToAddr.get(key);
+          } else if (appsForUser && appsForUser.size > 1) {
+            // Multiple apps for same username - can't reliably determine which one
+            // We'll mark as unknown to avoid incorrect attribution
+            appName = 'unknown-service';
           }
         }
 
         // If we still can't identify, mark as unknown but still capture stats
         if (!appName || this.shouldExcludeApplication(appName)) {
           appName = 'unknown-service';
+          // Don't set clientAddr for unknown services to avoid incorrect attribution
+          clientAddr = undefined;
         }
         
         const tables = this.extractTablesFromQuery(row.query);
         const operations = this.extractOperationsFromQuery(row.query);
         
+        // Validate we have tables and operations
+        if (tables.length === 0 || operations.length === 0) {
+          // Skip if we can't extract table or operation
+          continue;
+        }
+        
         // Create stats entries for each table/operation combination
+        // For write operations, typically only one table is involved
         for (const table of tables.slice(0, 1)) { // Limit to first table to avoid fragmentation
+          // Validate table name
+          if (!table || table.length === 0 || table === '<no-recent-writes>') {
+            continue;
+          }
+          
           for (const op of operations as ('INSERT' | 'UPDATE' | 'DELETE')[]) {
+            if (!op) continue;
+            
             const key = `${appName}:${table}:${op}`;
             const existing = statsMap.get(key);
             
             if (existing) {
               // Aggregate counts for same app/table/operation
-              existing.count += parseInt(row.calls, 10);
+              const calls = parseInt(row.calls, 10);
+              if (!isNaN(calls) && calls > 0) {
+                existing.count += calls;
+              }
             } else {
-              statsMap.set(key, {
-                applicationName: appName,
-                table,
-                operation: op,
-                count: parseInt(row.calls, 10),
-                username,
-                clientAddr,
-              });
+              const calls = parseInt(row.calls, 10);
+              if (!isNaN(calls) && calls > 0) {
+                statsMap.set(key, {
+                  applicationName: appName,
+                  table,
+                  operation: op,
+                  count: calls,
+                  username,
+                  clientAddr,
+                });
+              }
             }
           }
         }
@@ -787,10 +887,15 @@ export class ApplicationTrackingService {
    * Extract table names from SQL query
    * Handles both quoted and unquoted identifiers, schema-qualified names
    * Filters out SQL keywords and schema names that aren't actual tables
+   * Improved to be more accurate and handle edge cases
    */
   private extractTablesFromQuery(query: string): string[] {
     const tables: string[] = [];
-    if (!query) return tables;
+    if (!query || typeof query !== 'string') return tables;
+
+    // Normalize query - remove comments and normalize whitespace
+    let normalizedQuery = query.replace(/--.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    normalizedQuery = normalizedQuery.replace(/\s+/g, ' ').trim();
 
     // SQL keywords and schema names that should NOT be treated as table names
     const excludedIdentifiers = new Set([
@@ -798,100 +903,151 @@ export class ApplicationTrackingService {
       'public', 'information_schema', 'pg_catalog', 'pg_toast',
       'values', 'as', 'on', 'using', 'join', 'inner', 'outer', 'left', 'right',
       'union', 'except', 'intersect', 'order', 'group', 'by', 'having',
-      'limit', 'offset', 'with', 'returning', 'default', 'null'
+      'limit', 'offset', 'with', 'returning', 'default', 'null', 'table',
+      'only', 'then', 'else', 'when', 'case', 'end'
     ]);
 
-    // Handle schema.table format and quoted identifiers
-    // INSERT INTO "TableName" or INSERT INTO schema."TableName"
-    // Also handle case-sensitive table names like "StorkPriceCandle"
-    const insertPatterns = [
-      /INSERT\s+INTO\s+(?:["']?(\w+)["']?\.)?["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      /INSERT\s+INTO\s+["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      // More flexible pattern for quoted identifiers with mixed case
-      /INSERT\s+INTO\s+(?:["']?(\w+)["']?\.)?["']([^"]+)["']/i,
-      /INSERT\s+INTO\s+["']([^"]+)["']/i,
-    ];
+    /**
+     * Extract table name from a matched identifier
+     * Handles: schema.table, "schema"."table", table, "table"
+     */
+    const extractTableName = (match: RegExpMatchArray, schemaIndex: number, tableIndex: number): string | null => {
+      const schema = match[schemaIndex]?.trim();
+      let tableName = match[tableIndex]?.trim();
+      
+      if (!tableName) return null;
+      
+      // Remove quotes if present
+      tableName = tableName.replace(/^["']|["']$/g, '');
+      
+      // If schema.table format, extract just the table name
+      if (tableName.includes('.')) {
+        const parts = tableName.split('.');
+        tableName = parts[parts.length - 1].replace(/^["']|["']$/g, '');
+      }
+      
+      // Validate table name
+      if (!tableName || 
+          tableName.length === 0 ||
+          excludedIdentifiers.has(tableName.toLowerCase()) ||
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
+        return null;
+      }
+      
+      return tableName;
+    };
 
-    for (const pattern of insertPatterns) {
-      const match = query.match(pattern);
-      if (match) {
-        // Try match[2] first (schema.table), then match[1] (table only)
-        let tableName = (match[2] || match[1])?.trim();
-        
-        // If we matched schema.table format, extract just the table name
-        if (tableName && tableName.includes('.')) {
-          const parts = tableName.split('.');
-          tableName = parts[parts.length - 1]; // Get the last part (table name)
-        }
-        
-        // Filter out excluded identifiers and ensure it's a valid table name
-        if (tableName && 
-            !excludedIdentifiers.has(tableName.toLowerCase()) &&
-            !tables.includes(tableName) &&
-            tableName.length > 0) {
-          tables.push(tableName);
-        }
+    // INSERT INTO patterns - more precise matching
+    // Pattern 1: INSERT INTO schema."TableName" or INSERT INTO "schema"."TableName"
+    const insertPattern1 = /INSERT\s+INTO\s+(?:([A-Za-z_][A-Za-z0-9_]*|"[^"]+")\.)?("?[A-Za-z_][A-Za-z0-9_]*"?|"[^"]+")/i;
+    const insertMatch1 = normalizedQuery.match(insertPattern1);
+    if (insertMatch1) {
+      const tableName = extractTableName(insertMatch1, 1, 2);
+      if (tableName && !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables; // Return early after first valid match
+      }
+    }
+    
+    // Pattern 2: INSERT INTO "TableName" (quoted, no schema)
+    const insertPattern2 = /INSERT\s+INTO\s+"([^"]+)"/i;
+    const insertMatch2 = normalizedQuery.match(insertPattern2);
+    if (insertMatch2 && !tables.length) {
+      const tableName = insertMatch2[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
+      }
+    }
+    
+    // Pattern 3: INSERT INTO TableName (unquoted, no schema)
+    const insertPattern3 = /INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i;
+    const insertMatch3 = normalizedQuery.match(insertPattern3);
+    if (insertMatch3 && !tables.length) {
+      const tableName = insertMatch3[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
       }
     }
 
-    // UPDATE "TableName" or UPDATE schema."TableName"
-    // Also handle case-sensitive table names
-    const updatePatterns = [
-      /UPDATE\s+(?:["']?(\w+)["']?\.)?["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      /UPDATE\s+["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      // More flexible pattern for quoted identifiers with mixed case
-      /UPDATE\s+(?:["']?(\w+)["']?\.)?["']([^"]+)["']/i,
-      /UPDATE\s+["']([^"]+)["']/i,
-    ];
-
-    for (const pattern of updatePatterns) {
-      const match = query.match(pattern);
-      if (match) {
-        let tableName = (match[2] || match[1])?.trim();
-        
-        // If we matched schema.table format, extract just the table name
-        if (tableName && tableName.includes('.')) {
-          const parts = tableName.split('.');
-          tableName = parts[parts.length - 1]; // Get the last part (table name)
-        }
-        
-        // Filter out excluded identifiers and ensure it's a valid table name
-        if (tableName && 
-            !excludedIdentifiers.has(tableName.toLowerCase()) &&
-            !tables.includes(tableName) &&
-            tableName.length > 0) {
-          tables.push(tableName);
-        }
+    // UPDATE patterns - more precise matching
+    // Pattern 1: UPDATE schema."TableName" or UPDATE "schema"."TableName"
+    const updatePattern1 = /UPDATE\s+(?:([A-Za-z_][A-Za-z0-9_]*|"[^"]+")\.)?("?[A-Za-z_][A-Za-z0-9_]*"?|"[^"]+")/i;
+    const updateMatch1 = normalizedQuery.match(updatePattern1);
+    if (updateMatch1) {
+      const tableName = extractTableName(updateMatch1, 1, 2);
+      if (tableName && !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables; // Return early after first valid match
+      }
+    }
+    
+    // Pattern 2: UPDATE "TableName" (quoted, no schema)
+    const updatePattern2 = /UPDATE\s+"([^"]+)"/i;
+    const updateMatch2 = normalizedQuery.match(updatePattern2);
+    if (updateMatch2 && !tables.length) {
+      const tableName = updateMatch2[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
+      }
+    }
+    
+    // Pattern 3: UPDATE TableName (unquoted, no schema)
+    const updatePattern3 = /UPDATE\s+([A-Za-z_][A-Za-z0-9_]*)/i;
+    const updateMatch3 = normalizedQuery.match(updatePattern3);
+    if (updateMatch3 && !tables.length) {
+      const tableName = updateMatch3[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
       }
     }
 
-    // DELETE FROM "TableName" or DELETE FROM schema."TableName"
-    const deletePatterns = [
-      /DELETE\s+FROM\s+(?:["']?(\w+)["']?\.)?["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      /DELETE\s+FROM\s+["']?([A-Za-z_][A-Za-z0-9_]*)["']?/i,
-      // More flexible pattern for quoted identifiers with mixed case
-      /DELETE\s+FROM\s+(?:["']?(\w+)["']?\.)?["']([^"]+)["']/i,
-      /DELETE\s+FROM\s+["']([^"]+)["']/i,
-    ];
-
-    for (const pattern of deletePatterns) {
-      const match = query.match(pattern);
-      if (match) {
-        let tableName = (match[2] || match[1])?.trim();
-        
-        // If we matched schema.table format, extract just the table name
-        if (tableName && tableName.includes('.')) {
-          const parts = tableName.split('.');
-          tableName = parts[parts.length - 1]; // Get the last part (table name)
-        }
-        
-        // Filter out excluded identifiers and ensure it's a valid table name
-        if (tableName && 
-            !excludedIdentifiers.has(tableName.toLowerCase()) &&
-            !tables.includes(tableName) &&
-            tableName.length > 0) {
-          tables.push(tableName);
-        }
+    // DELETE FROM patterns - more precise matching
+    // Pattern 1: DELETE FROM schema."TableName" or DELETE FROM "schema"."TableName"
+    const deletePattern1 = /DELETE\s+FROM\s+(?:([A-Za-z_][A-Za-z0-9_]*|"[^"]+")\.)?("?[A-Za-z_][A-Za-z0-9_]*"?|"[^"]+")/i;
+    const deleteMatch1 = normalizedQuery.match(deletePattern1);
+    if (deleteMatch1) {
+      const tableName = extractTableName(deleteMatch1, 1, 2);
+      if (tableName && !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables; // Return early after first valid match
+      }
+    }
+    
+    // Pattern 2: DELETE FROM "TableName" (quoted, no schema)
+    const deletePattern2 = /DELETE\s+FROM\s+"([^"]+)"/i;
+    const deleteMatch2 = normalizedQuery.match(deletePattern2);
+    if (deleteMatch2 && !tables.length) {
+      const tableName = deleteMatch2[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
+      }
+    }
+    
+    // Pattern 3: DELETE FROM TableName (unquoted, no schema)
+    const deletePattern3 = /DELETE\s+FROM\s+([A-Za-z_][A-Za-z0-9_]*)/i;
+    const deleteMatch3 = normalizedQuery.match(deletePattern3);
+    if (deleteMatch3 && !tables.length) {
+      const tableName = deleteMatch3[1]?.trim();
+      if (tableName && 
+          !excludedIdentifiers.has(tableName.toLowerCase()) &&
+          !tables.includes(tableName)) {
+        tables.push(tableName);
+        return tables;
       }
     }
 

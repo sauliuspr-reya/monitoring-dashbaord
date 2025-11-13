@@ -69,7 +69,7 @@ Configure via External Secrets or Helm values:
 
 **Source/Target Databases** (optional, for viewing tables without subscriptions):
 - `SOURCE_DATABASE_URL` - Source database connection string
-- `TARGET_DATABASE_URL` - Target database connection string (or `DESTINATION_DATABASE_URL`)
+- `TARGET_DATABASE_URL` - Target database connection string
 
 **Authentication** (optional):
 - `AUTH_USERNAME` - Basic auth username (default: admin)

@@ -13,16 +13,10 @@ export default async function handler(
       // Test connection first
       await pool.query('SELECT 1');
       
-      // Support both old and new table names for backward compatibility
       const result = await pool.query(`
         SELECT * FROM subscriptions
         ORDER BY created_at DESC
-      `).catch(() => 
-        pool.query(`
-          SELECT * FROM replication_groups
-          ORDER BY created_at DESC
-        `)
-      );
+      `);
 
       const groups: ReplicationGroup[] = result.rows.map((row) => ({
         id: row.id,
@@ -61,17 +55,8 @@ export default async function handler(
       }
 
       const pool = getDbPool();
-      // Support both old and new table names
-      const tableName = await pool.query(`
-        SELECT EXISTS (
-          SELECT FROM information_schema.tables 
-          WHERE table_schema = 'public' 
-          AND table_name = 'subscriptions'
-        )
-      `).then(r => r.rows[0].exists ? 'subscriptions' : 'replication_groups');
-
       const result = await pool.query(`
-        INSERT INTO ${tableName} (
+        INSERT INTO subscriptions (
           name, description, source_db_connection, target_db_connection,
           publication_name, subscription_name, slot_name, enabled
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

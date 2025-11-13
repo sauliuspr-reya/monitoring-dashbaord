@@ -8,6 +8,7 @@ export interface Subscription {
   subscriptionName: string;
   slotName: string;
   enabled: boolean;
+  dataCopy?: boolean; // Whether copy_data=true was set during subscription creation
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,6 +98,7 @@ export interface ReplicationStatus {
   tableCount: number;
   tablesWithIssues: number;
   conflicts: number;
+  dataCopy?: boolean; // Whether copy_data=true was set during subscription creation
 }
 
 // Legacy aliases for backward compatibility

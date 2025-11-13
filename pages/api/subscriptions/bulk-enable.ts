@@ -18,11 +18,7 @@ export default async function handler(
     // Get all subscriptions
     const subResult = await pool.query(`
       SELECT * FROM subscriptions
-    `).catch(() =>
-      pool.query(`
-        SELECT * FROM replication_groups
-      `)
-    );
+    `);
 
     if (subResult.rows.length === 0) {
       return res.status(200).json({
@@ -56,11 +52,7 @@ export default async function handler(
           // Update monitoring database
           await pool.query(`
             UPDATE subscriptions SET enabled = $1 WHERE id = $2
-          `, [enabled, subscription.id]).catch(() =>
-            pool.query(`
-              UPDATE replication_groups SET enabled = $1 WHERE id = $2
-            `, [enabled, subscription.id])
-          );
+          `, [enabled, subscription.id]);
 
           results.processed++;
         } finally {

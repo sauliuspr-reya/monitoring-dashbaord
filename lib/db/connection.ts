@@ -80,7 +80,7 @@ export function getDbPool(): Pool {
   // Fallback: If password seems incomplete (too short) or missing, try to extract from connection URL
   // This handles cases where $ in password causes shell variable expansion issues
   if (!rawPassword || rawPassword.length < 8) {
-    const destUrl = process.env.DESTINATION_DATABASE_URL || process.env.TARGET_DATABASE_URL;
+    const destUrl = process.env.TARGET_DATABASE_URL;
     if (destUrl && host && user) {
       // Check if the URL is for the same host/user as our monitoring DB
       try {
@@ -92,7 +92,7 @@ export function getDbPool(): Pool {
         if (urlHost === host && urlUser === user) {
           const extractedPassword = extractPasswordFromUrl(destUrl);
           if (extractedPassword) {
-            console.log('[db/connection] Using password from DESTINATION_DATABASE_URL (MONITORING_DB_PASSWORD appears incomplete)');
+            console.log('[db/connection] Using password from TARGET_DATABASE_URL (MONITORING_DB_PASSWORD appears incomplete)');
             rawPassword = extractedPassword;
           }
         }

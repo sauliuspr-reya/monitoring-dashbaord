@@ -23,11 +23,7 @@ export default async function handler(
     // Get subscription details
     const subResult = await pool.query(`
       SELECT * FROM subscriptions WHERE id = $1
-    `, [id]).catch(() =>
-      pool.query(`
-        SELECT * FROM replication_groups WHERE id = $1
-      `, [id])
-    );
+    `, [id]);
 
     if (subResult.rows.length === 0) {
       return res.status(404).json({ error: 'Subscription not found' });
@@ -75,6 +71,22 @@ export default async function handler(
       // Step 3: Drop replication slot on source (optional, usually dropped with subscription)
       if (dropSlot && slotName) {
         try {
+          // Check slot lag before dropping (warning only)
+          const slotInfo = await sourcePool.query(`
+            SELECT 
+              active,
+              pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as lag_bytes
+            FROM pg_replication_slots
+            WHERE slot_name = $1
+          `, [slotName]);
+          
+          if (slotInfo.rows.length > 0) {
+            const lagBytes = parseInt(slotInfo.rows[0].lag_bytes || '0', 10);
+            if (lagBytes > 1073741824) { // > 1GB
+              console.warn(`Warning: Slot '${slotName}' has ${(lagBytes / 1024 / 1024 / 1024).toFixed(2)}GB of WAL lag`);
+            }
+          }
+          
           const escapedSlotName = slotName.replace(/'/g, "''");
           await sourcePool.query(`SELECT pg_drop_replication_slot('${escapedSlotName}')`);
           results.slotDropped = true;
@@ -85,13 +97,9 @@ export default async function handler(
 
       // Step 4: Remove from monitoring database
       try {
-        await pool.query(`DELETE FROM subscriptions WHERE id = $1`, [id]).catch(() =>
-          pool.query(`DELETE FROM replication_groups WHERE id = $1`, [id])
-        );
+        await pool.query(`DELETE FROM subscriptions WHERE id = $1`, [id]);
         // Also delete related tables
-        await pool.query(`DELETE FROM subscription_tables WHERE subscription_id = $1`, [id]).catch(() =>
-          pool.query(`DELETE FROM replication_group_tables WHERE group_id = $1`, [id])
-        );
+        await pool.query(`DELETE FROM subscription_tables WHERE subscription_id = $1`, [id]);
         results.monitoringRemoved = true;
       } catch (error: any) {
         results.errors.push(`Failed to remove from monitoring: ${error.message}`);

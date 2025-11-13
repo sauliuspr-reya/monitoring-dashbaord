@@ -27,7 +27,7 @@ export default async function handler(
         `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.source-database-url}' | base64 -d`
       );
       const destUrlResult = await execAsync(
-        `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.destination-database-url}' | base64 -d`
+        `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.target-database-url}' | base64 -d`
       );
 
       const sourceUrl = sourceUrlResult.stdout.trim();
@@ -49,7 +49,7 @@ export default async function handler(
       
       // Get from environment variables as fallback
       const sourceUrl = process.env.SOURCE_DATABASE_URL || '';
-      const destUrl = process.env.DESTINATION_DATABASE_URL || process.env.TARGET_DATABASE_URL || '';
+      const destUrl = process.env.TARGET_DATABASE_URL || '';
       
       res.status(200).json({
         sourceDbConnection: sourceUrl,

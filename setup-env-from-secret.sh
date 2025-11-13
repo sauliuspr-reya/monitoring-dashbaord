@@ -26,7 +26,7 @@ if ! kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" &>/dev/null; then
   echo "Please create the secret first:"
   echo "  kubectl create secret generic $SECRET_NAME -n $NAMESPACE \\"
   echo "    --from-literal=source-database-url='postgresql://user:pass@host:5432/db' \\"
-  echo "    --from-literal=destination-database-url='postgresql://user:pass@host:5432/db'"
+  echo "    --from-literal=target-database-url='postgresql://user:pass@host:5432/db'"
   exit 1
 fi
 
@@ -36,7 +36,7 @@ echo ""
 # Extract connection strings
 echo "Extracting connection strings from secret..."
 SOURCE_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.source-database-url}' | base64 -d)
-DEST_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.destination-database-url}' | base64 -d)
+DEST_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.target-database-url}' | base64 -d)
 
 if [[ -z "$SOURCE_URL" ]] || [[ -z "$DEST_URL" ]]; then
   echo "❌ Error: Could not extract connection strings from secret"
@@ -103,7 +103,7 @@ echo "Creating $ENV_FILE..."
   echo "# These are extracted from the Kubernetes secret but not used directly in env"
   echo "# They will be stored in the monitoring database when you create replication groups"
   printf 'SOURCE_DATABASE_URL=%s\n' "${SOURCE_URL}"
-  printf 'DESTINATION_DATABASE_URL=%s\n' "${DEST_URL}"
+  printf 'TARGET_DATABASE_URL=%s\n' "${DEST_URL}"
 } > "$ENV_FILE"
 
 echo "✓ Created $ENV_FILE"

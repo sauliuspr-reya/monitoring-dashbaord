@@ -167,7 +167,7 @@ export default function BackupPage() {
   };
 
   const handleRestore = async (filename: string) => {
-    // Connection string is optional if DESTINATION_DATABASE_URL/TARGET_DATABASE_URL env var is set
+    // Connection string is optional if TARGET_DATABASE_URL env var is set
     // The API will use the env var as fallback
 
     if (!confirm(`Restore backup ${filename} to target database? This will overwrite existing tables.`)) {
@@ -250,7 +250,7 @@ export default function BackupPage() {
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">Database Connections</h2>
             <p className="text-sm text-gray-600 mb-4">
-              Connection strings are optional if <code className="bg-gray-100 px-1 rounded">SOURCE_DATABASE_URL</code> and <code className="bg-gray-100 px-1 rounded">DESTINATION_DATABASE_URL</code> environment variables are set.
+              Connection strings are optional if <code className="bg-gray-100 px-1 rounded">SOURCE_DATABASE_URL</code> and <code className="bg-gray-100 px-1 rounded">TARGET_DATABASE_URL</code> environment variables are set.
               You can override them by providing custom connection strings below.
             </p>
             <div className="space-y-4">
@@ -270,14 +270,14 @@ export default function BackupPage() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Target Database (for restore)
-                  {targetConnectionString ? '' : <span className="text-gray-500 ml-1">(using DESTINATION_DATABASE_URL)</span>}
+                  {targetConnectionString ? '' : <span className="text-gray-500 ml-1">(using TARGET_DATABASE_URL)</span>}
                 </label>
                 <input
                   type="password"
                   value={targetConnectionString}
                   onChange={(e) => setTargetConnectionString(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder={targetConnectionString ? "postgresql://user:password@host:port/database" : "Using DESTINATION_DATABASE_URL from environment"}
+                  placeholder={targetConnectionString ? "postgresql://user:password@host:port/database" : "Using TARGET_DATABASE_URL from environment"}
                 />
               </div>
             </div>

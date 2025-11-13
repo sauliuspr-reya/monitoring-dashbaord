@@ -29,13 +29,7 @@ export default async function handler(
       SELECT id, name, publication_name, source_db_connection, target_db_connection
       FROM subscriptions
       ORDER BY name
-    `).catch(() =>
-      pool.query(`
-        SELECT id, name, publication_name, source_db_connection, target_db_connection
-        FROM replication_groups
-        ORDER BY name
-      `)
-    );
+    `);
 
     const subscriptions = subscriptionsResult.rows;
 

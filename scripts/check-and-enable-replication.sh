@@ -24,7 +24,7 @@ echo ""
 
 # Extract connection strings
 SOURCE_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.source-database-url}' | base64 -d)
-DEST_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.destination-database-url}' | base64 -d)
+DEST_URL=$(kubectl get secret -n "$NAMESPACE" "$SECRET_NAME" -o jsonpath='{.data.target-database-url}' | base64 -d)
 
 if [[ -z "$SOURCE_URL" ]] || [[ -z "$DEST_URL" ]]; then
   echo "❌ Error: Could not extract connection strings"

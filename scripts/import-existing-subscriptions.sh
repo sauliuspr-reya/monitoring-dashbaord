@@ -23,15 +23,11 @@ MONITORING_DB_USER=$(grep "^MONITORING_DB_USER=" .env.local | cut -d '=' -f2- | 
 MONITORING_DB_PASSWORD=$(grep "^MONITORING_DB_PASSWORD=" .env.local | cut -d '=' -f2- | tr -d '"' | tr -d "'" | sed 's/\\\$/$/g' | sed 's/\\=/=/g')
 
 SOURCE_DATABASE_URL=$(grep "^SOURCE_DATABASE_URL=" .env.local | cut -d '=' -f2- | tr -d '"' | tr -d "'" | sed 's/\\\$/$/g' | sed 's/\\=/=/g')
-TARGET_DATABASE_URL=$(grep "^DESTINATION_DATABASE_URL=" .env.local | cut -d '=' -f2- | tr -d '"' | tr -d "'" | sed 's/\\\$/$/g' | sed 's/\\=/=/g')
-
-if [[ -z "${TARGET_DATABASE_URL:-}" ]]; then
-  TARGET_DATABASE_URL=$(grep "^TARGET_DATABASE_URL=" .env.local | cut -d '=' -f2- | tr -d '"' | tr -d "'" | sed 's/\\\$/$/g' | sed 's/\\=/=/g' || echo "")
-fi
+TARGET_DATABASE_URL=$(grep "^TARGET_DATABASE_URL=" .env.local | cut -d '=' -f2- | tr -d '"' | tr -d "'" | sed 's/\\\$/$/g' | sed 's/\\=/=/g' || echo "")
 
 if [[ -z "${MONITORING_DB_HOST:-}" ]] || [[ -z "${SOURCE_DATABASE_URL:-}" ]] || [[ -z "${TARGET_DATABASE_URL:-}" ]]; then
   echo "❌ Error: Missing required environment variables in .env.local"
-  echo "   Required: MONITORING_DB_HOST, SOURCE_DATABASE_URL, DESTINATION_DATABASE_URL (or TARGET_DATABASE_URL)"
+  echo "   Required: MONITORING_DB_HOST, SOURCE_DATABASE_URL, TARGET_DATABASE_URL"
   exit 1
 fi
 

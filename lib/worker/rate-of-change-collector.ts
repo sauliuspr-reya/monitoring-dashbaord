@@ -79,17 +79,6 @@ class RateOfChangeCollector {
           enabled
         FROM subscriptions
         WHERE enabled = true
-        
-        UNION
-        
-        SELECT 
-          id,
-          name,
-          source_db_connection,
-          target_db_connection,
-          enabled
-        FROM replication_groups
-        WHERE enabled = true
       `);
 
       const subscriptions = subscriptionsResult.rows;
@@ -100,7 +89,7 @@ class RateOfChangeCollector {
         
         // Fallback to environment variables if no subscriptions configured
         const sourceUrl = process.env.SOURCE_DATABASE_URL;
-        const targetUrl = process.env.TARGET_DATABASE_URL || process.env.DESTINATION_DATABASE_URL;
+        const targetUrl = process.env.TARGET_DATABASE_URL;
         
         if (sourceUrl) {
           console.log('Using source database from environment variables');

@@ -19,11 +19,7 @@ export default async function handler(
     // Get subscription details
     const subResult = await pool.query(`
       SELECT * FROM subscriptions WHERE id = $1
-    `, [id]).catch(() =>
-      pool.query(`
-        SELECT * FROM replication_groups WHERE id = $1
-      `, [id])
-    );
+    `, [id]);
 
     if (subResult.rows.length === 0) {
       return res.status(404).json({ error: 'Subscription not found' });
@@ -45,11 +41,7 @@ export default async function handler(
       // Update monitoring database
       await pool.query(`
         UPDATE subscriptions SET enabled = $1 WHERE id = $2
-      `, [enabled, id]).catch(() =>
-        pool.query(`
-          UPDATE replication_groups SET enabled = $1 WHERE id = $2
-        `, [enabled, id])
-      );
+      `, [enabled, id]);
 
       res.status(200).json({
         success: true,
