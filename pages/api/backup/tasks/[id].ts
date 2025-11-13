@@ -47,8 +47,24 @@ export default async function handler(
         message: error.message,
       });
     }
+  } else if (req.method === 'POST') {
+    // Cancel task
+    try {
+      await backupTaskService.cancelTask(id);
+
+      res.status(200).json({
+        success: true,
+        message: 'Task cancelled successfully',
+      });
+    } catch (error: any) {
+      console.error('[backup/tasks] Error cancelling task:', error);
+      res.status(500).json({
+        error: 'Failed to cancel task',
+        message: error.message,
+      });
+    }
   } else {
-    res.setHeader('Allow', ['GET', 'DELETE']);
+    res.setHeader('Allow', ['GET', 'DELETE', 'POST']);
     res.status(405).json({ error: `Method ${req.method} not allowed` });
   }
 }

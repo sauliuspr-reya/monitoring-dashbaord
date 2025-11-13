@@ -15,6 +15,11 @@ export interface BackupTask {
   filepath?: string;
   file_size?: number;
   tables?: string[];
+  exclude_tables?: string[];
+  snapshot_id?: string;
+  slot_name?: string;
+  publication_name?: string;
+  slot_initial_lsn?: string;
   connection_string_hash?: string;
   schema_only?: boolean;
   error_message?: string;
@@ -35,12 +40,63 @@ export class BackupTaskService {
   }
 
   /**
+   * Parse table names from comma or newline-separated string
+   * Handles various formats: "public.table", 'public."Table"', table, etc.
+   */
+  private parseTableList(tableList: string | string[] | undefined): string[] {
+    if (!tableList) {
+      return [];
+    }
+
+    if (Array.isArray(tableList)) {
+      return tableList;
+    }
+
+    // Split by comma or newline, trim whitespace, filter empty strings
+    return tableList
+      .split(/[,\n]/)
+      .map(t => t.trim())
+      .filter(t => t.length > 0);
+  }
+
+  /**
+   * Normalize table name for pg_dump --exclude-table flag
+   * Handles: "public.table", 'public."Table"', table, etc.
+   * Returns: public."Table" or public.table (properly quoted)
+   */
+  private normalizeTableName(tableName: string): string {
+    // Remove existing quotes if present
+    let cleaned = tableName.replace(/^["']|["']$/g, '').trim();
+    
+    // Split by dot to get schema and table
+    const parts = cleaned.split('.');
+    
+    if (parts.length === 2) {
+      const [schema, table] = parts;
+      // Quote schema if it has uppercase or special chars
+      const quotedSchema = /[A-Z]/.test(schema) || /[^a-z0-9_]/.test(schema) ? `"${schema}"` : schema;
+      // Quote table if it has uppercase or special chars
+      const quotedTable = /[A-Z]/.test(table) || /[^a-z0-9_]/.test(table) ? `"${table}"` : table;
+      return `${quotedSchema}.${quotedTable}`;
+    } else {
+      // No schema specified, assume public
+      const quotedTable = /[A-Z]/.test(cleaned) || /[^a-z0-9_]/.test(cleaned) ? `"${cleaned}"` : cleaned;
+      return `public.${quotedTable}`;
+    }
+  }
+
+  /**
    * Create a new backup task
    */
   async createTask(
     taskType: 'backup' | 'restore',
     options: {
       tables?: string[];
+      excludeTables?: string[] | string;
+      snapshotId?: string;
+      slotName?: string;
+      publicationName?: string;
+      slotInitialLsn?: string;
       connectionString: string;
       schemaOnly?: boolean;
       filename?: string;
@@ -49,17 +105,25 @@ export class BackupTaskService {
   ): Promise<BackupTask> {
     const pool = getDbPool();
     const connHash = this.hashConnectionString(options.connectionString);
+    
+    // Parse exclude tables (can be array, comma-separated, or newline-separated)
+    const excludeTables = this.parseTableList(options.excludeTables);
 
     const result = await pool.query(
       `INSERT INTO backup_tasks (
-        task_type, status, tables, connection_string_hash, 
-        schema_only, filename, created_by, metadata
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        task_type, status, tables, exclude_tables, snapshot_id, slot_name, publication_name, 
+        slot_initial_lsn, connection_string_hash, schema_only, filename, created_by, metadata
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
         taskType,
         'pending',
         options.tables || null,
+        excludeTables.length > 0 ? excludeTables : null,
+        options.snapshotId || null,
+        options.slotName || null,
+        options.publicationName || null,
+        options.slotInitialLsn || null,
         connHash,
         options.schemaOnly || false,
         options.filename || null,
@@ -204,6 +268,27 @@ export class BackupTaskService {
   }
 
   /**
+   * Cancel a running task
+   */
+  async cancelTask(taskId: string): Promise<void> {
+    const task = await this.getTask(taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found`);
+    }
+
+    if (task.status !== 'running' && task.status !== 'pending') {
+      throw new Error(`Task ${taskId} cannot be cancelled (status: ${task.status})`);
+    }
+
+    await this.updateTask(taskId, {
+      status: 'cancelled',
+      error_message: 'Cancelled by user',
+    });
+
+    console.log(`[backup-task] Task ${taskId} cancelled`);
+  }
+
+  /**
    * Delete task and optionally its backup file
    */
   async deleteTask(taskId: string, deleteFile: boolean = false): Promise<void> {
@@ -259,22 +344,21 @@ export class BackupTaskService {
       const filepath = path.join(backupDir, filename);
 
       // Build pg_dump command
+      // Include tables (if specified)
       const tableArgs = (task.tables || []).map(t => {
-        let tableName = t.includes('.') ? t : `public.${t}`;
-        const parts = tableName.split('.');
-        if (parts.length === 2) {
-          const [schema, table] = parts;
-          const quotedSchema = /[A-Z]/.test(schema) ? `"${schema}"` : schema;
-          const quotedTable = /[A-Z]/.test(table) || /[^a-z0-9_]/.test(table) ? `"${table}"` : table;
-          return `-t ${quotedSchema}.${quotedTable}`;
-        } else {
-          const quoted = /[A-Z]/.test(tableName) || /[^a-z0-9_]/.test(tableName) ? `"${tableName}"` : tableName;
-          return `-t ${quoted}`;
-        }
+        const normalized = this.normalizeTableName(t);
+        return `-t ${normalized}`;
+      }).join(' ');
+
+      // Exclude tables (if specified)
+      const excludeTableArgs = (task.exclude_tables || []).map(t => {
+        const normalized = this.normalizeTableName(t);
+        return `--exclude-table=${normalized}`;
       }).join(' ');
 
       const dataFlag = task.schema_only ? '--schema-only' : '';
       
+      // Build command - note: if tables are specified, we use -t, otherwise we dump all and use --exclude-table
       const command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' pg_dump ` +
         `-h ${conn.host} ` +
         `-p ${conn.port} ` +
@@ -283,10 +367,15 @@ export class BackupTaskService {
         `${dataFlag} ` +
         `--no-owner ` +
         `--no-privileges ` +
-        `${tableArgs} ` +
+        `${tableArgs ? tableArgs + ' ' : ''}` +
+        `${excludeTableArgs ? excludeTableArgs + ' ' : ''}` +
         `-f ${filepath}`;
 
-      console.log(`[backup-task] Executing backup task ${taskId}: ${(task.tables || []).length} tables`);
+      const tableCount = (task.tables || []).length;
+      const excludeCount = (task.exclude_tables || []).length;
+      const slotInfo = task.slot_name ? ` (slot: ${task.slot_name}${task.slot_initial_lsn ? `, LSN: ${task.slot_initial_lsn}` : ''})` : '';
+      const snapshotInfo = task.snapshot_id ? ` (snapshot: ${task.snapshot_id})` : '';
+      console.log(`[backup-task] Executing backup task ${taskId}: ${tableCount} tables${excludeCount > 0 ? `, ${excludeCount} excluded` : ''}${slotInfo}${snapshotInfo}`);
 
       // Execute backup
       const { stdout, stderr } = await execAsync(command, {
@@ -296,6 +385,17 @@ export class BackupTaskService {
           PGPASSWORD: conn.password,
         },
       });
+
+      // Check if task was cancelled during execution
+      const currentTask = await this.getTask(taskId);
+      if (currentTask?.status === 'cancelled') {
+        // Clean up file if it was created
+        try {
+          await fs.unlink(filepath).catch(() => {});
+        } catch {}
+        console.log(`[backup-task] Backup task ${taskId} was cancelled, skipping completion`);
+        return;
+      }
 
       // Check if file was created
       const stats = await fs.stat(filepath);
@@ -314,6 +414,13 @@ export class BackupTaskService {
 
       console.log(`[backup-task] Backup task ${taskId} completed: ${filename} (${fileSize} bytes)`);
     } catch (error: any) {
+      // Check if task was cancelled
+      const currentTask = await this.getTask(taskId);
+      if (currentTask?.status === 'cancelled') {
+        console.log(`[backup-task] Backup task ${taskId} was cancelled`);
+        return;
+      }
+
       console.error(`[backup-task] Backup task ${taskId} failed:`, error);
       await this.updateTask(taskId, {
         status: 'failed',
@@ -329,6 +436,7 @@ export class BackupTaskService {
 
   /**
    * Execute restore task in background
+   * Automatically detects backup format and uses pg_restore for custom format, psql for plain SQL
    */
   async executeRestoreTask(taskId: string, connectionString: string): Promise<void> {
     const task = await this.getTask(taskId);
@@ -352,21 +460,50 @@ export class BackupTaskService {
       // Check if file exists
       await fs.access(task.filepath);
 
-      const command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' psql ` +
-        `-h ${conn.host} ` +
-        `-p ${conn.port} ` +
-        `-U ${conn.user} ` +
-        `-d ${conn.database} ` +
-        `-f ${task.filepath}`;
+      // Detect backup format by file extension
+      const isCustomFormat = task.filepath.endsWith('.dump') || task.filepath.endsWith('.backup');
+      const isCompressed = task.filepath.endsWith('.gz');
 
-      console.log(`[backup-task] Executing restore task ${taskId}: ${task.filename}`);
+      let command: string;
+      
+      if (isCustomFormat) {
+        // Use pg_restore for custom format dumps
+        command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' pg_restore ` +
+          `-h ${conn.host} ` +
+          `-p ${conn.port} ` +
+          `-U ${conn.user} ` +
+          `-d ${conn.database} ` +
+          `--no-owner ` +
+          `--no-privileges ` +
+          `--verbose ` +
+          `${task.filepath}`;
+      } else if (isCompressed) {
+        // Compressed SQL file - use gunzip + psql
+        command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' gunzip -c ${task.filepath} | psql ` +
+          `-h ${conn.host} ` +
+          `-p ${conn.port} ` +
+          `-U ${conn.user} ` +
+          `-d ${conn.database} ` +
+          `-q`;
+      } else {
+        // Plain SQL file - use psql
+        command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' psql ` +
+          `-h ${conn.host} ` +
+          `-p ${conn.port} ` +
+          `-U ${conn.user} ` +
+          `-d ${conn.database} ` +
+          `-f ${task.filepath}`;
+      }
+
+      console.log(`[backup-task] Executing restore task ${taskId}: ${task.filename} (format: ${isCustomFormat ? 'custom' : isCompressed ? 'compressed SQL' : 'plain SQL'})`);
 
       const { stdout, stderr } = await execAsync(command, {
-        maxBuffer: 10 * 1024 * 1024,
+        maxBuffer: 100 * 1024 * 1024, // Increased for large restores
         env: {
           ...process.env,
           PGPASSWORD: conn.password,
         },
+        shell: '/bin/bash', // Required for pipe operations
       });
 
       await this.updateTask(taskId, {
@@ -374,6 +511,7 @@ export class BackupTaskService {
         metadata: {
           stdout: stdout || undefined,
           stderr: stderr || undefined,
+          format: isCustomFormat ? 'custom' : isCompressed ? 'compressed SQL' : 'plain SQL',
         },
       });
 
@@ -451,6 +589,11 @@ export class BackupTaskService {
       filepath: row.filepath,
       file_size: row.file_size ? Number(row.file_size) : undefined,
       tables: row.tables,
+      exclude_tables: row.exclude_tables,
+      snapshot_id: row.snapshot_id,
+      slot_name: row.slot_name,
+      publication_name: row.publication_name,
+      slot_initial_lsn: row.slot_initial_lsn,
       connection_string_hash: row.connection_string_hash,
       schema_only: row.schema_only,
       error_message: row.error_message,

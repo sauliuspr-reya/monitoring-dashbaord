@@ -65,7 +65,16 @@ export default async function handler(
   }
 
   try {
-    const { tables, connectionString, schemaOnly = false } = req.body;
+    const { 
+      tables, 
+      excludeTables, 
+      snapshotId,
+      slotName,
+      publicationName,
+      slotInitialLsn,
+      connectionString, 
+      schemaOnly = false 
+    } = req.body;
 
     // Use SOURCE_DATABASE_URL as default if not provided
     const sourceConnectionString = connectionString || process.env.SOURCE_DATABASE_URL;
@@ -76,8 +85,14 @@ export default async function handler(
       });
     }
 
-    if (!tables || !Array.isArray(tables) || tables.length === 0) {
-      return res.status(400).json({ error: 'At least one table must be specified' });
+    // Tables are optional if excludeTables is provided (dump all except excluded)
+    // But at least one of them should be provided
+    if ((!tables || !Array.isArray(tables) || tables.length === 0) && 
+        (!excludeTables || (typeof excludeTables === 'string' && excludeTables.trim().length === 0) || 
+         (Array.isArray(excludeTables) && excludeTables.length === 0))) {
+      return res.status(400).json({ 
+        error: 'Either tables or excludeTables must be specified. Provide tables to include, or excludeTables to exclude from full backup.' 
+      });
     }
 
     // Ensure backup directory exists and is writable
@@ -101,7 +116,12 @@ export default async function handler(
 
     // Create background task
     const task = await backupTaskService.createTask('backup', {
-      tables,
+      tables: tables && Array.isArray(tables) && tables.length > 0 ? tables : undefined,
+      excludeTables: excludeTables, // Can be array, comma-separated string, or newline-separated string
+      snapshotId: snapshotId,
+      slotName: slotName,
+      publicationName: publicationName,
+      slotInitialLsn: slotInitialLsn,
       connectionString: sourceConnectionString,
       schemaOnly,
       createdBy: req.headers['x-user'] as string || undefined,

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Navbar from '@/components/Navbar';
-import Link from 'next/link';
 
 interface TableInfo {
   tableName: string; // Full name: schema.table
@@ -19,30 +18,213 @@ interface BackupInfo {
   modified: string;
 }
 
+interface BackupTaskInfo {
+  id: string;
+  task_type: 'backup' | 'restore';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  filename?: string;
+  filepath?: string;
+  file_size?: number;
+  tables?: string[];
+  exclude_tables?: string[];
+  snapshot_id?: string;
+  slot_name?: string;
+  publication_name?: string;
+  slot_initial_lsn?: string;
+  schema_only?: boolean;
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export default function BackupPage() {
   const router = useRouter();
   const [tables, setTables] = useState<TableInfo[]>([]);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
+  const [backupTasks, setBackupTasks] = useState<BackupTaskInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingBackups, setLoadingBackups] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(true);
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
+  const [excludeMode, setExcludeMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [schemaOnly, setSchemaOnly] = useState(false); // Default: include data (schemaOnly = false)
+  const [schemaOnly, setSchemaOnly] = useState(false);
+  const [enableReplication, setEnableReplication] = useState(true); // Enable replication by default
   const [backingUp, setBackingUp] = useState(false);
   const [restoring, setRestoring] = useState<{ [key: string]: boolean }>({});
-  const [connectionString, setConnectionString] = useState('');
-  const [targetConnectionString, setTargetConnectionString] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [backupProgress, setBackupProgress] = useState<{
+    step: string;
+    status: 'pending' | 'running' | 'completed' | 'error';
+    details?: string;
+    fileSize?: number;
+    estimatedSize?: number;
+    taskId?: string;
+  } | null>(null);
+  
+  // Exclude tables text input
+  const [excludeTablesText, setExcludeTablesText] = useState('');
+  const [showExcludeTextInput, setShowExcludeTextInput] = useState(false);
+  
+  // Poll for backup progress
+  const [progressInterval, setProgressInterval] = useState<NodeJS.Timeout | null>(null);
+
+  // Common exclude tables list (preset)
+  const COMMON_EXCLUDE_TABLES = `public."AccountBalanceSeries"
+public."AccountCollateralBalanceSeries"
+public."AccountTotalBalanceSeries"
+public."Candle"
+public."DiscordRankUpdaterHelper"
+public."EmbeddedWallets"
+public."EndOfSeasonData"
+public."FundingRateSeries"
+public."LatestXpLeaderboardSnapshots"
+public."LatestXpLeaderboardSnapshotsV5"
+public."LatestXpLeaderboardV3"
+public."LeaderBoardsTempSep192025"
+public."LiquidityXpV4"
+public."LiquidityXpV5"
+public."LpPoolAddressPerformanceSeries"
+public."OwnerAddressTotalBalanceSeries"
+public."Passkeys"
+public."PointsLeaderBoards_backup"
+public."PointsXpOpenInterestSnapshots"
+public."PointsXpStakingSnapshots"
+public."PositionSeries"
+public."PriceFeedMonitoring"
+public."RandomBoost"
+public."SpotCandle"
+public."StorkPriceUpdates"
+public."TraderActivitySnapshots"
+public."TradingInstantBoostV4"
+public."TrmRiskResult"
+public."WalletMarketPreference"
+public."XpUserV3"
+public."XpV3LeaderboardSnapshot"
+public.account_collateral_balance_entries
+public.account_collateral_net_balance
+public.account_owner_updated_history
+public.account_owner_updated_snapshot
+public.asset_price_history
+public.asset_price_interval
+public.auto_exchange_configrations
+public.margin_accounts_balance_entries
+public.market_trackers_history
+public.market_trackers_interval
+public.market_volatility_configuration_history
+public.order_history
+public.order_off_chain_trackers
+public.orders_migration
+public.pool_price_history
+public.pool_price_snapshot
+public.positions_migration
+public.rebalancing_discount
+public.rebate_fee_history
+public.spot_price_history
+public.stork_asset_price_history
+public.trading_stats_account_market
+public.trading_stats_wallet`;
+
+  const loadPresetExcludeTables = () => {
+    setExcludeTablesText(COMMON_EXCLUDE_TABLES);
+    setShowExcludeTextInput(true);
+  };
 
   useEffect(() => {
     loadTables();
     loadBackups();
-    loadConnectionStrings();
+    loadBackupTasks();
   }, []);
 
   useEffect(() => {
-    // Pre-select tables from query parameter when navigating from tables page
+    // Refresh tasks every 5 seconds if there are running tasks
+    const interval = setInterval(() => {
+      const hasRunningTasks = backupTasks.some(t => t.status === 'running' || t.status === 'pending');
+      if (hasRunningTasks) {
+        loadBackupTasks();
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [backupTasks]);
+  
+  useEffect(() => {
+    // Cleanup interval on unmount
+    return () => {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
+    };
+  }, [progressInterval]);
+  
+  // Poll for backup progress
+  const pollBackupProgress = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/backup/tasks/${taskId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const task = data.task;
+        
+        if (task.status === 'running' && task.filepath) {
+          // Try to get current file size
+          try {
+            const fileRes = await fetch(`/api/backup/tasks/${taskId}/file-size`);
+            if (fileRes.ok) {
+              const fileData = await fileRes.json();
+              setBackupProgress(prev => ({
+                ...prev!,
+                fileSize: fileData.fileSize,
+                step: `Backing up... ${formatBytes(fileData.fileSize || 0)}`,
+                status: 'running',
+              }));
+            }
+          } catch (err) {
+            // Ignore file size errors, use task file_size if available
+          }
+          
+          if (task.file_size) {
+            setBackupProgress(prev => ({
+              ...prev!,
+              fileSize: task.file_size,
+              step: `Backing up... ${formatBytes(task.file_size)}`,
+              status: 'running',
+            }));
+          }
+        } else if (task.status === 'completed') {
+          setBackupProgress({
+            step: 'Backup completed',
+            status: 'completed',
+            fileSize: task.file_size,
+            details: task.filename ? `File: ${task.filename} (${formatBytes(task.file_size || 0)})` : undefined,
+          });
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            setProgressInterval(null);
+          }
+          await loadBackups();
+          await loadBackupTasks();
+        } else if (task.status === 'failed' || task.status === 'cancelled') {
+          setBackupProgress({
+            step: task.status === 'cancelled' ? 'Backup cancelled' : 'Backup failed',
+            status: 'error',
+            details: task.error_message || 'Unknown error',
+          });
+          if (progressInterval) {
+            clearInterval(progressInterval);
+            setProgressInterval(null);
+          }
+          await loadBackupTasks();
+        }
+      }
+    } catch (err) {
+      console.error('Error polling backup progress:', err);
+    }
+  };
+
+  useEffect(() => {
     if (router.query.tables) {
       const preSelectedTables = (router.query.tables as string).split(',').filter(Boolean);
       if (preSelectedTables.length > 0) {
@@ -80,16 +262,68 @@ export default function BackupPage() {
     }
   };
 
-  const loadConnectionStrings = async () => {
+  const loadBackupTasks = async () => {
     try {
-      const res = await fetch('/api/config/connections');
+      setLoadingTasks(true);
+      const res = await fetch('/api/backup/tasks?task_type=backup&limit=50');
       if (res.ok) {
         const data = await res.json();
-        if (data.sourceDbConnection) setConnectionString(data.sourceDbConnection);
-        if (data.targetDbConnection) setTargetConnectionString(data.targetDbConnection);
+        setBackupTasks(data.tasks || []);
       }
-    } catch (err) {
-      // Ignore
+    } catch (err: any) {
+      console.error('Error loading backup tasks:', err);
+    } finally {
+      setLoadingTasks(false);
+    }
+  };
+
+  const handleCancelTask = async (taskId: string) => {
+    if (!confirm('Are you sure you want to cancel this backup task?')) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/backup/tasks/${taskId}`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        setSuccess('Backup task cancelled successfully');
+        loadBackupTasks();
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to cancel task');
+      }
+    } catch (err: any) {
+      setError('Failed to cancel task: ' + err.message);
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string, hasFile: boolean) => {
+    const message = hasFile
+      ? 'Are you sure you want to delete this task? This will also delete the backup file.'
+      : 'Are you sure you want to delete this task?';
+    if (!confirm(message)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/backup/tasks/${taskId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ deleteFile: hasFile }),
+      });
+      if (res.ok) {
+        setSuccess('Backup task deleted successfully');
+        loadBackupTasks();
+        loadBackups(); // Refresh backup list in case file was deleted
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to delete task');
+      }
+    } catch (err: any) {
+      setError('Failed to delete task: ' + err.message);
     }
   };
 
@@ -112,54 +346,187 @@ export default function BackupPage() {
     setSelectedTables(new Set());
   };
 
-  const handleBackup = async () => {
-    if (selectedTables.size === 0) {
-      setError('Please select at least one table');
+  // Parse and load tables from text (newline or comma-separated)
+  const loadTablesFromText = () => {
+    if (!excludeTablesText.trim()) {
+      setError('Please enter table names to exclude');
       return;
     }
 
-    // Connection string is optional if SOURCE_DATABASE_URL env var is set
-    // The API will use the env var as fallback
+    // Parse tables - support both newline and comma-separated
+    const tableNames = excludeTablesText
+      .split(/[,\n]/)
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .map(line => {
+        // Remove quotes if present
+        return line.replace(/^["']|["']$/g, '');
+      });
+
+    if (tableNames.length === 0) {
+      setError('No valid table names found in the text');
+      return;
+    }
+
+    // Match table names to available tables
+    const matchedTables = new Set<string>();
+    const unmatchedTables: string[] = [];
+
+    tableNames.forEach(tableName => {
+      // Normalize input: remove quotes, handle schema prefix
+      let normalizedInput = tableName.trim();
+      
+      // Remove surrounding quotes
+      normalizedInput = normalizedInput.replace(/^["']|["']$/g, '');
+      
+      // Extract table name (remove schema prefix if present)
+      const tableNameOnly = normalizedInput.replace(/^public\./, '').replace(/^[^.]*\./, '');
+      
+      // Try multiple matching strategies
+      const table = tables.find(t => {
+        const fullName = t.tableName.toLowerCase();
+        const tableOnly = t.table.toLowerCase();
+        const normalizedLower = normalizedInput.toLowerCase();
+        const tableOnlyLower = tableNameOnly.toLowerCase();
+        
+        // Exact match with schema
+        if (fullName === normalizedLower) return true;
+        
+        // Match without schema
+        if (fullName === `public.${normalizedLower}`) return true;
+        
+        // Match table name only
+        if (tableOnly === tableOnlyLower) return true;
+        
+        // Match with quotes in full name
+        if (fullName === normalizedLower.replace(/"/g, '')) return true;
+        
+        // Match end of full name (schema.table)
+        if (fullName.endsWith(`.${tableOnlyLower}`)) return true;
+        
+        return false;
+      });
+
+      if (table) {
+        matchedTables.add(table.table);
+      } else {
+        unmatchedTables.push(tableName);
+      }
+    });
+
+    if (matchedTables.size > 0) {
+      setSelectedTables(matchedTables);
+      setSuccess(`Loaded ${matchedTables.size} table${matchedTables.size !== 1 ? 's' : ''} from text${unmatchedTables.length > 0 ? ` (${unmatchedTables.length} not found)` : ''}`);
+      if (unmatchedTables.length > 0) {
+        console.warn('Unmatched tables:', unmatchedTables);
+      }
+      setExcludeTablesText(''); // Clear input after loading
+      setShowExcludeTextInput(false);
+    } else {
+      setError(`No matching tables found. Unmatched: ${unmatchedTables.slice(0, 5).join(', ')}${unmatchedTables.length > 5 ? '...' : ''}`);
+    }
+  };
+
+  const handleBackup = async () => {
+    if (!excludeMode && selectedTables.size === 0) {
+      setError('Please select at least one table to include');
+      return;
+    }
+    if (excludeMode && selectedTables.size === 0) {
+      setError('Please select at least one table to exclude');
+      return;
+    }
 
     try {
       setBackingUp(true);
       setError(null);
       setSuccess(null);
+      setBackupProgress({ step: 'Preparing backup...', status: 'running' });
 
       // Convert selected table names to full tableName (schema.table) format
-      const tablesToBackup = Array.from(selectedTables).map(selectedTable => {
-        // Find the full table info to get schema.table format
+      const tableNames = Array.from(selectedTables).map(selectedTable => {
         const tableInfo = tables.find(t => t.table === selectedTable || t.tableName === selectedTable);
         if (tableInfo && tableInfo.tableName) {
-          return tableInfo.tableName; // Use full schema.table format
+          return tableInfo.tableName;
         }
-        // Fallback: if table name already has schema, use it; otherwise assume public schema
         return selectedTable.includes('.') ? selectedTable : `public.${selectedTable}`;
       });
 
-      const res = await fetch('/api/backup/create', {
+      const requestBody: any = {
+        schemaOnly,
+        enableReplication, // This will create publication and slot automatically
+      };
+
+      if (excludeMode) {
+        requestBody.excludeTables = tableNames;
+      } else {
+        requestBody.tables = tableNames;
+      }
+
+      setBackupProgress({ 
+        step: enableReplication ? 'Creating publication and replication slot...' : 'Creating backup task...', 
+        status: 'running' 
+      });
+
+      const res = await fetch('/api/backup/create-with-slot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tables: tablesToBackup,
-          connectionString: connectionString || undefined, // Only send if provided, API will use env var
-          schemaOnly, // false = include data, true = schema only
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        if (data.taskId) {
-          setSuccess(`Backup task created (ID: ${data.taskId.substring(0, 8)}...). Check task status for progress.`);
-        } else {
-          setSuccess(`Backup created: ${data.filename} (${formatBytes(data.fileSize)})`);
+        // Refresh backup tasks list
+        loadBackupTasks();
+        
+        // Calculate estimated size from selected tables
+        let estimatedSize = 0;
+        if (!excludeMode && selectedTables.size > 0) {
+          const selectedTableInfos = tables.filter(t => selectedTables.has(t.table));
+          estimatedSize = selectedTableInfos.reduce((sum, t) => sum + (t.sourceSize || 0), 0);
+        } else if (excludeMode) {
+          const excludedTableInfos = tables.filter(t => selectedTables.has(t.table));
+          const excludedSize = excludedTableInfos.reduce((sum, t) => sum + (t.sourceSize || 0), 0);
+          const totalSize = tables.reduce((sum, t) => sum + (t.sourceSize || 0), 0);
+          estimatedSize = totalSize - excludedSize;
         }
-        await loadBackups();
+        
+        if (data.taskId) {
+          // Start polling for progress
+          const interval = setInterval(() => {
+            pollBackupProgress(data.taskId);
+          }, 2000); // Poll every 2 seconds
+          setProgressInterval(interval);
+          
+          setBackupProgress({
+            step: 'Backup task created, starting backup...',
+            status: 'running',
+            taskId: data.taskId,
+            estimatedSize: estimatedSize > 0 ? estimatedSize : undefined,
+            details: enableReplication 
+              ? `Publication: ${data.publicationName}, Slot: ${data.slotName}`
+              : undefined
+          });
+          
+          setSuccess(
+            enableReplication
+              ? `Backup task created. Publication and replication slot created. Backup in progress...`
+              : `Backup task created. Backup in progress...`
+          );
+          
+          // Initial poll after 1 second
+          setTimeout(() => pollBackupProgress(data.taskId), 1000);
+        } else {
+          setBackupProgress({ step: 'Failed', status: 'error', details: data.error });
+          setError(data.error || 'Failed to create backup');
+        }
       } else {
+        setBackupProgress({ step: 'Failed', status: 'error', details: data.error });
         setError(data.error || 'Failed to create backup');
       }
     } catch (err: any) {
+      setBackupProgress({ step: 'Failed', status: 'error', details: err.message });
       setError(err.message || 'Failed to create backup');
     } finally {
       setBackingUp(false);
@@ -167,10 +534,7 @@ export default function BackupPage() {
   };
 
   const handleRestore = async (filename: string) => {
-    // Connection string is optional if TARGET_DATABASE_URL env var is set
-    // The API will use the env var as fallback
-
-    if (!confirm(`Restore backup ${filename} to target database? This will overwrite existing tables.`)) {
+    if (!confirm(`Restore backup ${filename}? This will overwrite existing tables.`)) {
       return;
     }
 
@@ -184,7 +548,6 @@ export default function BackupPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename,
-          connectionString: targetConnectionString || undefined, // Only send if provided, API will use env var
           dryRun: false,
         }),
       });
@@ -193,7 +556,7 @@ export default function BackupPage() {
 
       if (res.ok) {
         if (data.taskId) {
-          setSuccess(`Restore task created (ID: ${data.taskId.substring(0, 8)}...). Check task status for progress.`);
+          setSuccess(`Restore task created (ID: ${data.taskId.substring(0, 8)}...). Restore in progress...`);
         } else {
           setSuccess(`Restore completed: ${filename}`);
         }
@@ -228,7 +591,7 @@ export default function BackupPage() {
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-gray-900">Backup & Restore</h1>
             <p className="mt-2 text-gray-600">
-              Backup tables using pg_dump and restore them to target databases
+              Select tables to backup. Optionally enable replication to capture changes during backup.
             </p>
           </div>
 
@@ -246,64 +609,212 @@ export default function BackupPage() {
             </div>
           )}
 
-          {/* Connection Strings */}
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Database Connections</h2>
-            <p className="text-sm text-gray-600 mb-4">
-              Connection strings are optional if <code className="bg-gray-100 px-1 rounded">SOURCE_DATABASE_URL</code> and <code className="bg-gray-100 px-1 rounded">TARGET_DATABASE_URL</code> environment variables are set.
-              You can override them by providing custom connection strings below.
-            </p>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Source Database (for backup)
-                  {connectionString ? '' : <span className="text-gray-500 ml-1">(using SOURCE_DATABASE_URL)</span>}
-                </label>
-                <input
-                  type="password"
-                  value={connectionString}
-                  onChange={(e) => setConnectionString(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder={connectionString ? "postgresql://user:password@host:port/database" : "Using SOURCE_DATABASE_URL from environment"}
-                />
+          {backupProgress && (
+            <div className={`mb-6 border rounded-lg p-4 ${
+              backupProgress.status === 'completed' ? 'bg-green-50 border-green-200' :
+              backupProgress.status === 'error' ? 'bg-red-50 border-red-200' :
+              'bg-blue-50 border-blue-200'
+            }`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  {backupProgress.status === 'running' && (
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
+                  )}
+                  {backupProgress.status === 'completed' && (
+                    <span className="text-green-600 mr-2">✓</span>
+                  )}
+                  {backupProgress.status === 'error' && (
+                    <span className="text-red-600 mr-2">✗</span>
+                  )}
+                  <span className={`font-medium ${
+                    backupProgress.status === 'completed' ? 'text-green-800' :
+                    backupProgress.status === 'error' ? 'text-red-800' :
+                    'text-blue-800'
+                  }`}>
+                    {backupProgress.step}
+                  </span>
+                </div>
+                {backupProgress.fileSize !== undefined && (
+                  <div className="text-sm font-mono text-gray-600">
+                    {formatBytes(backupProgress.fileSize)}
+                    {backupProgress.estimatedSize && backupProgress.estimatedSize > 0 && (
+                      <span className="text-gray-400 ml-2">
+                        / ~{formatBytes(backupProgress.estimatedSize)}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Target Database (for restore)
-                  {targetConnectionString ? '' : <span className="text-gray-500 ml-1">(using TARGET_DATABASE_URL)</span>}
-                </label>
-                <input
-                  type="password"
-                  value={targetConnectionString}
-                  onChange={(e) => setTargetConnectionString(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder={targetConnectionString ? "postgresql://user:password@host:port/database" : "Using TARGET_DATABASE_URL from environment"}
-                />
-              </div>
+              {backupProgress.details && (
+                <div className="mt-2 text-sm text-gray-600">{backupProgress.details}</div>
+              )}
+              {backupProgress.status === 'running' && backupProgress.fileSize && backupProgress.estimatedSize && backupProgress.estimatedSize > 0 && (
+                <div className="mt-3">
+                  <div className="w-full bg-gray-200 rounded-full h-2">
+                    <div 
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                      style={{ 
+                        width: `${Math.min(100, (backupProgress.fileSize / backupProgress.estimatedSize) * 100)}%` 
+                      }}
+                    ></div>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500 text-right">
+                    {Math.round((backupProgress.fileSize / backupProgress.estimatedSize) * 100)}% complete
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
           {/* Backup Section */}
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              Backup Tables ({selectedTables.size} selected)
+              Step 1: Select Tables ({selectedTables.size} {excludeMode ? 'excluded' : 'selected'})
             </h2>
 
-            <div className="mb-4">
+            {/* Mode Toggle */}
+            <div className="mb-4 p-3 bg-gray-50 rounded-lg">
               <label className="flex items-center">
                 <input
                   type="checkbox"
-                  checked={schemaOnly}
-                  onChange={(e) => setSchemaOnly(e.target.checked)}
+                  checked={excludeMode}
+                  onChange={(e) => setExcludeMode(e.target.checked)}
                   className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                 />
-                <span className="ml-2 text-sm text-gray-700">Schema only (exclude data)</span>
+                <span className="ml-2 text-sm font-medium text-gray-700">
+                  Exclude mode (backup all tables except selected)
+                </span>
               </label>
               <p className="ml-6 mt-1 text-xs text-gray-500">
-                By default, backups include both schema and data. Check this to backup schema only.
+                {excludeMode 
+                  ? 'All tables will be backed up except the ones you select below.'
+                  : 'Only the selected tables will be backed up.'}
               </p>
+              
+              {excludeMode && (
+                <div className="ml-6 mt-3 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowExcludeTextInput(!showExcludeTextInput)}
+                      className="text-sm text-blue-600 hover:text-blue-700 flex items-center"
+                    >
+                      <span>{showExcludeTextInput ? '▼' : '▶'}</span>
+                      <span className="ml-2">Load exclude tables from text</span>
+                    </button>
+                    <span className="text-gray-400">|</span>
+                    <button
+                      type="button"
+                      onClick={loadPresetExcludeTables}
+                      className="text-sm text-green-600 hover:text-green-700"
+                    >
+                      Load Common Exclude List ({COMMON_EXCLUDE_TABLES.split('\n').filter(l => l.trim()).length} tables)
+                    </button>
+                  </div>
+                  
+                  {showExcludeTextInput && (
+                    <div className="mt-3 space-y-2">
+                      <textarea
+                        value={excludeTablesText}
+                        onChange={(e) => setExcludeTablesText(e.target.value)}
+                        placeholder='Paste table names here (one per line or comma-separated):&#10;public."AccountBalanceSeries"&#10;public."Candle"&#10;public.order_history'
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                        rows={8}
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={loadTablesFromText}
+                          disabled={!excludeTablesText.trim()}
+                          className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        >
+                          Load Tables
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExcludeTablesText('');
+                            setShowExcludeTextInput(false);
+                          }}
+                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded text-sm hover:bg-gray-300"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        Supports both newline-separated and comma-separated formats. Table names can include schema prefix (e.g., "public.table" or just "table").
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
+            {/* Backup Type Selection */}
+            <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Backup Type</h3>
+              
+              <div className="space-y-3">
+                <label className="flex items-start">
+                  <input
+                    type="radio"
+                    name="backupType"
+                    checked={schemaOnly}
+                    onChange={(e) => {
+                      setSchemaOnly(true);
+                      setEnableReplication(false); // Schema-only doesn't use replication
+                    }}
+                    className="mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <div className="ml-3 flex-1">
+                    <span className="text-sm font-medium text-gray-700">Schema Only</span>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Backup table structures only (no data). No replication slot needed.
+                    </p>
+                  </div>
+                </label>
+                
+                <label className="flex items-start">
+                  <input
+                    type="radio"
+                    name="backupType"
+                    checked={!schemaOnly}
+                    onChange={(e) => setSchemaOnly(false)}
+                    className="mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <div className="ml-3 flex-1">
+                    <span className="text-sm font-medium text-gray-700">Full Backup (Data + Schema)</span>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Backup both table structures and data. Can optionally enable replication to capture changes.
+                    </p>
+                  </div>
+                </label>
+              </div>
+              
+              {!schemaOnly && (
+                <div className="mt-4 pt-4 border-t border-blue-200">
+                  <label className="flex items-center">
+                    <input
+                      type="checkbox"
+                      checked={enableReplication}
+                      onChange={(e) => setEnableReplication(e.target.checked)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="ml-2 flex-1">
+                      <span className="text-sm font-medium text-gray-700">
+                        Enable Replication Snapshot
+                      </span>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Creates a publication and replication slot before backup to capture changes during the backup process. 
+                        This enables continuous replication after the initial backup.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* Table Search and Selection */}
             <div className="mb-4">
               <input
                 type="text"
@@ -359,15 +870,148 @@ export default function BackupPage() {
             <button
               onClick={handleBackup}
               disabled={backingUp || selectedTables.size === 0}
-              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              className="w-full px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed font-medium"
             >
-              {backingUp ? 'Creating Backup...' : `Backup ${selectedTables.size} Table${selectedTables.size !== 1 ? 's' : ''}`}
+              {backingUp 
+                ? 'Creating Backup...' 
+                : excludeMode
+                  ? `Step 2: Backup All Tables (Excluding ${selectedTables.size})`
+                  : `Step 2: Backup ${selectedTables.size} Table${selectedTables.size !== 1 ? 's' : ''}`}
             </button>
+          </div>
+
+          {/* Backup Tasks Section */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Backup Tasks</h2>
+              <button
+                onClick={loadBackupTasks}
+                className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+              >
+                Refresh
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              View and manage backup tasks. Cancel running tasks or delete completed/failed tasks.
+            </p>
+
+            {loadingTasks ? (
+              <div className="text-center py-8 text-gray-500">Loading tasks...</div>
+            ) : backupTasks.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">No backup tasks found</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Details</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Filename</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Size</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
+                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {backupTasks.map((task) => {
+                      const isSnapshot = !!(task.slot_name || task.snapshot_id);
+                      const statusColors = {
+                        pending: 'bg-yellow-100 text-yellow-800',
+                        running: 'bg-blue-100 text-blue-800',
+                        completed: 'bg-green-100 text-green-800',
+                        failed: 'bg-red-100 text-red-800',
+                        cancelled: 'bg-gray-100 text-gray-800',
+                      };
+                      
+                      return (
+                        <tr key={task.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <div className="flex flex-col">
+                              <span className="text-sm font-medium text-gray-900">
+                                {task.schema_only ? 'Schema Only' : 'Full Backup'}
+                              </span>
+                              {isSnapshot && (
+                                <span className="text-xs text-blue-600 font-medium">With Snapshot</span>
+                              )}
+                              {!isSnapshot && !task.schema_only && (
+                                <span className="text-xs text-gray-500">Backup Only</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${statusColors[task.status] || 'bg-gray-100 text-gray-800'}`}>
+                              {task.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">
+                            <div className="space-y-1">
+                              {task.tables && task.tables.length > 0 && (
+                                <div className="text-xs">
+                                  <span className="font-medium">Tables:</span> {task.tables.length}
+                                </div>
+                              )}
+                              {task.exclude_tables && task.exclude_tables.length > 0 && (
+                                <div className="text-xs">
+                                  <span className="font-medium">Excluded:</span> {task.exclude_tables.length}
+                                </div>
+                              )}
+                              {task.slot_name && (
+                                <div className="text-xs text-blue-600">
+                                  <span className="font-medium">Slot:</span> {task.slot_name}
+                                </div>
+                              )}
+                              {task.error_message && (
+                                <div className="text-xs text-red-600 truncate max-w-xs" title={task.error_message}>
+                                  {task.error_message}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
+                            {task.filename || '-'}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">
+                            {task.file_size ? formatBytes(task.file_size) : '-'}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                            {new Date(task.created_at).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-center">
+                            <div className="flex gap-2 justify-center">
+                              {(task.status === 'running' || task.status === 'pending') && (
+                                <button
+                                  onClick={() => handleCancelTask(task.id)}
+                                  className="px-3 py-1.5 bg-yellow-600 text-white rounded text-sm hover:bg-yellow-700"
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                              {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') && (
+                                <button
+                                  onClick={() => handleDeleteTask(task.id, !!task.filepath)}
+                                  className="px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700"
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* Restore Section */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Available Backups</h2>
+            <h2 className="text-xl font-semibold text-gray-900 mb-4">Restore Backups</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Restore backups to target database (uses TARGET_DATABASE_URL from environment)
+            </p>
 
             {loadingBackups ? (
               <div className="text-center py-8 text-gray-500">Loading backups...</div>
@@ -417,5 +1061,3 @@ export default function BackupPage() {
     </>
   );
 }
-
-
