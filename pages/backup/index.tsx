@@ -71,6 +71,9 @@ export default function BackupPage() {
   
   // Poll for backup progress
   const [progressInterval, setProgressInterval] = useState<NodeJS.Timeout | null>(null);
+  
+  // Tab state: 'backup' or 'monitor'
+  const [activeTab, setActiveTab] = useState<'backup' | 'monitor'>('backup');
 
   // Common exclude tables list (preset)
   const COMMON_EXCLUDE_TABLES = `public."AccountBalanceSeries"
@@ -244,7 +247,11 @@ public.trading_stats_wallet`;
         setSelectedTables(new Set(preSelectedTables));
       }
     }
-  }, [router.query.tables]);
+    // Check if we should show monitor tab
+    if (router.pathname === '/backups' || router.query.tab === 'monitor') {
+      setActiveTab('monitor');
+    }
+  }, [router.query.tables, router.pathname, router.query.tab]);
 
   const loadTables = async () => {
     try {
@@ -639,10 +646,42 @@ public.trading_stats_wallet`;
       <div className="min-h-screen bg-gray-50">
         <div className="w-full px-6 sm:px-8 lg:px-12 py-8">
           <div className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900">Backup & Restore</h1>
-            <p className="mt-2 text-gray-600">
-              Select tables to backup. Optionally enable replication to capture changes during backup.
-            </p>
+            <div className="flex justify-between items-start">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Backup & Restore</h1>
+                <p className="mt-2 text-gray-600">
+                  {activeTab === 'backup' 
+                    ? 'Select tables to backup. Optionally enable replication to capture changes during backup.'
+                    : 'Track backup progress and replication gaps'}
+                </p>
+              </div>
+            </div>
+            
+            {/* Tabs */}
+            <div className="mt-6 border-b border-gray-200">
+              <nav className="-mb-px flex space-x-8">
+                <button
+                  onClick={() => setActiveTab('backup')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === 'backup'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  Backup & Restore
+                </button>
+                <button
+                  onClick={() => setActiveTab('monitor')}
+                  className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                    activeTab === 'monitor'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  Monitor
+                </button>
+              </nav>
+            </div>
           </div>
 
           {error && (
@@ -659,6 +698,8 @@ public.trading_stats_wallet`;
             </div>
           )}
 
+          {activeTab === 'backup' && (
+            <>
           {backupProgress && (
             <div className={`mb-6 border rounded-lg p-4 ${
               backupProgress.status === 'completed' ? 'bg-green-50 border-green-200' :
@@ -1160,8 +1201,310 @@ public.trading_stats_wallet`;
               </div>
             )}
           </div>
+            </>
+          )}
+
+          {activeTab === 'monitor' && (
+            <MonitorTab />
+          )}
         </div>
       </div>
     </>
+  );
+}
+
+// Monitor Tab Component
+function MonitorTab() {
+  const [backupStatus, setBackupStatus] = useState<any>(null);
+  const [gapAnalysis, setGapAnalysis] = useState<any>(null);
+  const [copyProgress, setCopyProgress] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      const [backupRes, gapRes, copyRes] = await Promise.all([
+        fetch('/api/backups/status'),
+        fetch('/api/replication/gap-analysis'),
+        fetch('/api/replication/copy-progress')
+      ]);
+
+      if (backupRes.ok) {
+        const backupData = await backupRes.json();
+        setBackupStatus(backupData);
+      }
+
+      if (gapRes.ok) {
+        const gapData = await gapRes.json();
+        setGapAnalysis(gapData);
+      }
+
+      if (copyRes.ok) {
+        const copyData = await copyRes.json();
+        setCopyProgress(copyData);
+      }
+
+      setLoading(false);
+    } catch (err: any) {
+      setError(err.message);
+      setLoading(false);
+    }
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+  };
+
+  const formatTimestamp = (date: Date | string): string => {
+    const d = new Date(date);
+    return d.toLocaleString();
+  };
+
+  const getTimeAgo = (date: Date | string): string => {
+    const now = new Date();
+    const then = new Date(date);
+    const seconds = Math.floor((now.getTime() - then.getTime()) / 1000);
+
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  };
+
+  if (loading) {
+    return (
+      <div className="text-center py-12 text-gray-500">Loading monitor data...</div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <p className="text-red-800">Error: {error}</p>
+        </div>
+      )}
+
+      {/* Backup Status Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="text-sm text-gray-600">Last Backup</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">
+            {backupStatus?.lastBackup ? getTimeAgo(backupStatus.lastBackup.timestamp) : 'N/A'}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {backupStatus?.lastBackup ? formatTimestamp(backupStatus.lastBackup.timestamp) : ''}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="text-sm text-gray-600">Total Backups</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">
+            {backupStatus?.backupCount || 0}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            {backupStatus?.totalSize ? formatBytes(backupStatus.totalSize) : '0 B'} total
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="text-sm text-gray-600">Replication Gap</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">
+            {gapAnalysis?.totalGapRows?.toLocaleString() || '0'}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            rows across {gapAnalysis?.tablesWithGaps || 0} tables
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="text-sm text-gray-600">Est. Catchup Time</div>
+          <div className="text-2xl font-bold text-gray-900 mt-1">
+            {gapAnalysis?.estimatedTotalCatchupTime || 'N/A'}
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            at current rate
+          </div>
+        </div>
+      </div>
+
+      {/* Subscription Copy Progress */}
+      {copyProgress && copyProgress.subscriptions && copyProgress.subscriptions.length > 0 && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Subscription Copy Progress (copy_data=true)
+            </h2>
+            <p className="text-sm text-gray-600 mt-1">
+              Overall: {copyProgress.overallProgress?.completedTables || 0} of {copyProgress.overallProgress?.totalTables || 0} tables complete ({copyProgress.overallProgress?.percentComplete?.toFixed(1) || 0}%)
+            </p>
+          </div>
+          <div className="p-6 space-y-4">
+            {copyProgress.subscriptions.map((sub: any, idx: number) => (
+              <div key={idx} className="border border-gray-200 rounded-lg p-4">
+                <div className="flex justify-between items-center mb-2">
+                  <div className="flex items-center gap-3">
+                    <h3 className="font-semibold text-gray-900">{sub.subscriptionName}</h3>
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      sub.status === 'complete' ? 'bg-green-100 text-green-800' :
+                      sub.status === 'in_progress' ? 'bg-blue-100 text-blue-800' :
+                      sub.status === 'ready' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-gray-100 text-gray-800'
+                    }`}>
+                      {sub.status === 'complete' ? '✓ Complete' :
+                       sub.status === 'in_progress' ? '🔄 Copying' :
+                       sub.status === 'ready' ? '⏸ Ready' : 'Unknown'}
+                    </span>
+                  </div>
+                  <div className="text-sm font-medium text-gray-900">
+                    {sub.percentComplete?.toFixed(1) || 0}%
+                  </div>
+                </div>
+                
+                <div className="w-full bg-gray-200 rounded-full h-2 mb-3">
+                  <div 
+                    className={`h-2 rounded-full transition-all duration-500 ${
+                      sub.status === 'complete' ? 'bg-green-600' :
+                      sub.status === 'in_progress' ? 'bg-blue-600' :
+                      'bg-yellow-600'
+                    }`}
+                    style={{ width: `${sub.percentComplete || 0}%` }}
+                  ></div>
+                </div>
+
+                <div className="grid grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <div className="text-gray-600">Total</div>
+                    <div className="font-semibold text-gray-900">{sub.totalTables || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-600">Done</div>
+                    <div className="font-semibold text-green-600">{sub.tablesDone || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-600">Copying</div>
+                    <div className="font-semibold text-blue-600">{sub.tablesInitializing || 0}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-600">Ready</div>
+                    <div className="font-semibold text-yellow-600">{sub.tablesReady || 0}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Replication Gap Analysis */}
+      {gapAnalysis && gapAnalysis.largestGaps && gapAnalysis.largestGaps.length > 0 && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-900">
+              Tables with Replication Gaps
+            </h2>
+            <p className="text-sm text-gray-600 mt-1">
+              {gapAnalysis.tablesWithGaps || 0} of {gapAnalysis.totalTables || 0} tables have data gaps
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Table</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Source Rows</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Target Rows</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Gap</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Gap %</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Est. Catchup</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {gapAnalysis.largestGaps.map((gap: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {gap.schema}.{gap.table}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                      {gap.sourceRows?.toLocaleString() || 0}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                      {gap.targetRows?.toLocaleString() || 0}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold text-red-600">
+                      {gap.gap?.toLocaleString() || 0}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-600">
+                      {gap.gapPercentage?.toFixed(1) || 0}%
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-600">
+                      {gap.estimatedCatchupTime || 'N/A'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Recent Backups */}
+      {backupStatus && backupStatus.recentBackups && backupStatus.recentBackups.length > 0 && (
+        <div className="bg-white rounded-lg shadow">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-xl font-semibold text-gray-900">Recent Backups</h2>
+            <p className="text-sm text-gray-600 mt-1">
+              Last {backupStatus.recentBackups.length} backup snapshots
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {backupStatus.recentBackups.map((backup: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {formatTimestamp(backup.timestamp)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">
+                      {formatBytes(backup.size || 0)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-600">
+                      {backup.duration ? `${Math.floor(backup.duration / 60)}m ${backup.duration % 60}s` : 'N/A'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        backup.status === 'completed' ? 'bg-green-100 text-green-800' :
+                        backup.status === 'running' ? 'bg-blue-100 text-blue-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {backup.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

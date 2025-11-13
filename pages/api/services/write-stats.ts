@@ -138,25 +138,36 @@ export default async function handler(
             message: 'No subscriptions found and no environment variables set. Please create a subscription or set SOURCE_DATABASE_URL and TARGET_DATABASE_URL.'
           });
         }
+      } else {
+        // Use the first subscription's connection strings
+        const firstSub = subscriptionsResult.rows[0];
+        if (!firstSub) {
+          return res.status(500).json({ 
+            error: 'Unexpected error: subscription row is undefined',
+            stats: [],
+            byApplication: {},
+            byTable: {},
+            hours: hoursNum
+          });
+        }
+        
+        sourceConnectionString = firstSub.source_db_connection;
+        targetConnectionString = firstSub.target_db_connection;
+        
+        if (!sourceConnectionString || !targetConnectionString) {
+          return res.status(400).json({ 
+            error: 'Database connection strings not found',
+            message: 'The subscription is missing source_db_connection or target_db_connection',
+            stats: [],
+            byApplication: {},
+            byTable: {},
+            hours: hoursNum
+          });
+        }
+        
+        sourcePool = createSourceTargetPool(sourceConnectionString);
+        targetPool = createSourceTargetPool(targetConnectionString);
       }
-
-      const firstSub = subscriptionsResult.rows[0];
-      sourceConnectionString = firstSub.source_db_connection;
-      targetConnectionString = firstSub.target_db_connection;
-      
-      if (!sourceConnectionString || !targetConnectionString) {
-        return res.status(400).json({ 
-          error: 'Database connection strings not found',
-          message: 'The subscription is missing source_db_connection or target_db_connection',
-          stats: [],
-          byApplication: {},
-          byTable: {},
-          hours: hoursNum
-        });
-      }
-      
-      sourcePool = createSourceTargetPool(sourceConnectionString);
-      targetPool = createSourceTargetPool(targetConnectionString);
     }
 
     // Detect database locations
