@@ -36,7 +36,14 @@ export default async function handler(
         
         // Update task with current file size if it's different
         if (fileSize !== task.file_size) {
-          await backupTaskService.updateTask(id, { file_size: fileSize });
+          const metadata = task.metadata || {};
+          await backupTaskService.updateTask(id, { 
+            file_size: fileSize,
+            metadata: {
+              ...metadata,
+              lastFileSizeUpdate: new Date().toISOString(),
+            },
+          });
         }
       } catch (error: any) {
         // File might not exist yet or not accessible, use stored size

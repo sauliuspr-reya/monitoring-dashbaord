@@ -10,7 +10,7 @@ const execAsync = promisify(exec);
 export interface BackupTask {
   id: string;
   task_type: 'backup' | 'restore';
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled';
   filename?: string;
   filepath?: string;
   file_size?: number;
@@ -161,7 +161,7 @@ export class BackupTaskService {
       // Set timestamps based on status
       if (updates.status === 'running') {
         setClauses.push(`started_at = NOW()`);
-      } else if (updates.status === 'completed' || updates.status === 'failed' || updates.status === 'cancelled') {
+      } else if (updates.status === 'completed' || updates.status === 'failed' || updates.status === 'cancelled' || updates.status === 'stalled') {
         setClauses.push(`completed_at = NOW()`);
       }
     }
@@ -409,6 +409,7 @@ export class BackupTaskService {
         metadata: {
           stdout: stdout || undefined,
           stderr: stderr || undefined,
+          lastFileSizeUpdate: new Date().toISOString(),
         },
       });
 
@@ -603,6 +604,91 @@ export class BackupTaskService {
       updated_at: row.updated_at,
       created_by: row.created_by,
       metadata: row.metadata,
+    };
+  }
+
+  /**
+   * Check for stalled backup tasks and update their status
+   * A task is considered stalled if:
+   * 1. It's been running for more than 2 minutes without file size change, OR
+   * 2. It's been running but hasn't updated its status in more than 2 minutes
+   */
+  async checkForStalledTasks(): Promise<{ checked: number; stalled: number }> {
+    const pool = getDbPool();
+    const STALL_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+    const now = new Date();
+
+    // Get all running backup tasks
+    const result = await pool.query(`
+      SELECT * FROM backup_tasks 
+      WHERE status = 'running' AND task_type = 'backup'
+      ORDER BY updated_at ASC
+    `);
+
+    let stalledCount = 0;
+
+    for (const row of result.rows) {
+      const task = this.mapRowToTask(row);
+      let isStalled = false;
+      let stallReason = '';
+
+      // Check 1: Has the task been updated recently?
+      const timeSinceUpdate = now.getTime() - new Date(task.updated_at).getTime();
+      if (timeSinceUpdate > STALL_THRESHOLD_MS) {
+        isStalled = true;
+        stallReason = `No status update for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`;
+      }
+
+      // Check 2: If file exists, has file size changed in the last 2 minutes?
+      if (task.filepath && task.file_size !== undefined && !isStalled) {
+        try {
+          const stats = await fs.stat(task.filepath);
+          const currentFileSize = stats.size;
+          
+          // Get last file size update from metadata
+          const metadata = task.metadata || {};
+          const lastFileSizeUpdate = metadata.lastFileSizeUpdate 
+            ? new Date(metadata.lastFileSizeUpdate).getTime()
+            : new Date(task.updated_at).getTime();
+          
+          const timeSinceFileSizeUpdate = now.getTime() - lastFileSizeUpdate;
+          
+          // If file size hasn't changed and it's been more than 2 minutes since last update
+          if (currentFileSize === task.file_size && timeSinceFileSizeUpdate > STALL_THRESHOLD_MS) {
+            isStalled = true;
+            stallReason = `File size unchanged for ${Math.round(timeSinceFileSizeUpdate / 1000 / 60)} minutes`;
+          } else if (currentFileSize !== task.file_size) {
+            // File size changed, update the task with new size and timestamp
+            await this.updateTask(task.id, {
+              file_size: currentFileSize,
+              metadata: {
+                ...metadata,
+                lastFileSizeUpdate: now.toISOString(),
+              },
+            });
+          }
+        } catch (error) {
+          // File doesn't exist or can't be accessed - might be stalled
+          if (timeSinceUpdate > STALL_THRESHOLD_MS) {
+            isStalled = true;
+            stallReason = `File not accessible and no update for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`;
+          }
+        }
+      }
+
+      if (isStalled) {
+        await this.updateTask(task.id, {
+          status: 'stalled',
+          error_message: `Backup stalled: ${stallReason}`,
+        });
+        stalledCount++;
+        console.log(`[backup-task] Marked task ${task.id} as stalled: ${stallReason}`);
+      }
+    }
+
+    return {
+      checked: result.rows.length,
+      stalled: stalledCount,
     };
   }
 }

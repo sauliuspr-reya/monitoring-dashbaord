@@ -21,7 +21,7 @@ interface BackupInfo {
 interface BackupTaskInfo {
   id: string;
   task_type: 'backup' | 'restore';
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled';
   filename?: string;
   filepath?: string;
   file_size?: number;
@@ -148,7 +148,20 @@ public.trading_stats_wallet`;
       }
     }, 5000);
 
-    return () => clearInterval(interval);
+    // Check for stalled tasks every 2 minutes
+    const stalledCheckInterval = setInterval(() => {
+      const hasRunningTasks = backupTasks.some(t => t.status === 'running');
+      if (hasRunningTasks) {
+        fetch('/api/backup/check-stalled', { method: 'POST' })
+          .then(() => loadBackupTasks())
+          .catch(err => console.error('Error checking for stalled tasks:', err));
+      }
+    }, 2 * 60 * 1000); // Every 2 minutes
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(stalledCheckInterval);
+    };
   }, [backupTasks]);
   
   useEffect(() => {
@@ -206,9 +219,9 @@ public.trading_stats_wallet`;
           }
           await loadBackups();
           await loadBackupTasks();
-        } else if (task.status === 'failed' || task.status === 'cancelled') {
+        } else if (task.status === 'failed' || task.status === 'cancelled' || task.status === 'stalled') {
           setBackupProgress({
-            step: task.status === 'cancelled' ? 'Backup cancelled' : 'Backup failed',
+            step: task.status === 'cancelled' ? 'Backup cancelled' : task.status === 'stalled' ? 'Backup stalled' : 'Backup failed',
             status: 'error',
             details: task.error_message || 'Unknown error',
           });
@@ -922,6 +935,7 @@ public.trading_stats_wallet`;
                         completed: 'bg-green-100 text-green-800',
                         failed: 'bg-red-100 text-red-800',
                         cancelled: 'bg-gray-100 text-gray-800',
+                        stalled: 'bg-orange-100 text-orange-800',
                       };
                       
                       return (
@@ -986,6 +1000,22 @@ public.trading_stats_wallet`;
                                 >
                                   Cancel
                                 </button>
+                              )}
+                              {task.status === 'stalled' && (
+                                <>
+                                  <button
+                                    onClick={() => handleCancelTask(task.id)}
+                                    className="px-3 py-1.5 bg-yellow-600 text-white rounded text-sm hover:bg-yellow-700"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteTask(task.id, !!task.filepath)}
+                                    className="px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700"
+                                  >
+                                    Delete
+                                  </button>
+                                </>
                               )}
                               {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') && (
                                 <button
