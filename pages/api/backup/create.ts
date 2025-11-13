@@ -1,10 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { BackupTaskService } from '@/lib/services/backup-task.service';
 import { promises as fs } from 'fs';
 import path from 'path';
 
-const execAsync = promisify(exec);
+const backupTaskService = new BackupTaskService();
 
 // Determine backup directory based on environment
 async function getBackupDir(): Promise<string> {
@@ -16,6 +15,10 @@ async function getBackupDir(): Promise<string> {
   // Check if /backup exists (Kubernetes pod)
   try {
     await fs.access('/backup');
+    // Ensure directory is writable
+    await fs.chmod('/backup', 0o755).catch(() => {
+      // Ignore chmod errors, try to write anyway
+    });
     return '/backup';
   } catch {
     return './backup'; // Default for local development
@@ -72,100 +75,49 @@ export default async function handler(
       return res.status(400).json({ error: 'At least one table must be specified' });
     }
 
-    // Parse connection string
-    const conn = parseConnectionString(connectionString);
-
-    // Determine backup directory
+    // Ensure backup directory exists and is writable
     const backupDir = await getBackupDir();
-    await fs.mkdir(backupDir, { recursive: true });
-
-    // Generate backup filename
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-    const tableList = tables.slice(0, 3).join('_');
-    const filename = `backup_${timestamp}_${tableList}${tables.length > 3 ? `_and_${tables.length - 3}_more` : ''}.sql`;
-    const filepath = path.join(backupDir, filename);
-
-    // Build pg_dump command
-    // Handle table names: if they don't have a schema prefix, assume 'public'
-    // Also properly quote table names to handle case-sensitive names
-    const tableArgs = tables.map(t => {
-      // If table name already includes schema (contains a dot), use as-is
-      // Otherwise, assume it's in the public schema
-      let tableName = t.includes('.') ? t : `public.${t}`;
-      
-      // For pg_dump, we need to quote the entire identifier if it contains uppercase
-      // or quote just the parts that need it. The format should be: schema."TableName"
-      // or "Schema"."TableName" if both are case-sensitive
-      const parts = tableName.split('.');
-      if (parts.length === 2) {
-        const [schema, table] = parts;
-        // Quote schema only if it has uppercase
-        const quotedSchema = /[A-Z]/.test(schema) ? `"${schema}"` : schema;
-        // Quote table if it has uppercase or special chars
-        const quotedTable = /[A-Z]/.test(table) || /[^a-z0-9_]/.test(table) ? `"${table}"` : table;
-        return `-t ${quotedSchema}.${quotedTable}`;
-      } else {
-        // Single identifier (no schema), quote if needed
-        const quoted = /[A-Z]/.test(tableName) || /[^a-z0-9_]/.test(tableName) ? `"${tableName}"` : tableName;
-        return `-t ${quoted}`;
-      }
-    }).join(' ');
-    // By default, include data. Only use --schema-only if explicitly requested
-    const dataFlag = schemaOnly ? '--schema-only' : '';
-    
-    const command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' pg_dump ` +
-      `-h ${conn.host} ` +
-      `-p ${conn.port} ` +
-      `-U ${conn.user} ` +
-      `-d ${conn.database} ` +
-      `${dataFlag} ` +
-      `--no-owner ` +
-      `--no-privileges ` +
-      `${tableArgs} ` +
-      `-f ${filepath}`;
-
-    console.log(`[backup] Starting backup: ${tables.length} tables to ${filepath}`);
-
-    // Execute backup
-    // Note: maxBuffer is for stdout/stderr, not the file size
-    // For large backups (200GB+), we increase buffer to handle verbose output
-    const { stdout, stderr } = await execAsync(command, {
-      maxBuffer: 100 * 1024 * 1024, // 100MB buffer for large backup output
-      env: {
-        ...process.env,
-        PGPASSWORD: conn.password,
-      },
-    });
-
-    // Check if file was created
     try {
-      const stats = await fs.stat(filepath);
-      const fileSize = stats.size;
-
-      console.log(`[backup] Backup completed: ${filepath} (${fileSize} bytes)`);
-
-      res.status(200).json({
-        success: true,
-        filename,
-        filepath,
-        fileSize,
-        tables: tables.length,
-        schemaOnly,
-        message: `Backup created successfully: ${filename}`,
+      await fs.mkdir(backupDir, { recursive: true });
+      // Try to write a test file to check permissions
+      const testFile = path.join(backupDir, '.write-test');
+      await fs.writeFile(testFile, 'test').catch(() => {
+        throw new Error(`Backup directory ${backupDir} is not writable. Check permissions.`);
       });
-    } catch (statError) {
-      console.error('[backup] Backup file not found after execution:', statError);
+      await fs.unlink(testFile).catch(() => {});
+    } catch (error: any) {
+      console.error('[backup] Backup directory error:', error);
       return res.status(500).json({
-        error: 'Backup command executed but file was not created',
-        stderr: stderr || stdout,
+        error: 'Backup directory is not accessible',
+        message: error.message,
+        backupDir,
       });
     }
+
+    // Create background task
+    const task = await backupTaskService.createTask('backup', {
+      tables,
+      connectionString,
+      schemaOnly,
+      createdBy: req.headers['x-user'] as string || undefined,
+    });
+
+    // Start backup in background (don't wait for completion)
+    backupTaskService.executeBackupTask(task.id, connectionString).catch((error) => {
+      console.error(`[backup] Background task ${task.id} failed:`, error);
+    });
+
+    res.status(202).json({
+      success: true,
+      taskId: task.id,
+      status: 'pending',
+      message: 'Backup task created and queued',
+    });
   } catch (error: any) {
-    console.error('[backup] Error creating backup:', error);
+    console.error('[backup] Error creating backup task:', error);
     res.status(500).json({
-      error: 'Failed to create backup',
+      error: 'Failed to create backup task',
       message: error.message,
-      details: error.stderr || error.stdout,
     });
   }
 }

@@ -1,10 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { BackupTaskService } from '@/lib/services/backup-task.service';
 import { promises as fs } from 'fs';
 import path from 'path';
 
-const execAsync = promisify(exec);
+const backupTaskService = new BackupTaskService();
 
 async function getBackupDir(): Promise<string> {
   if (process.env.BACKUP_DIR) {
@@ -68,9 +67,6 @@ export default async function handler(
       return res.status(400).json({ error: 'Connection string is required' });
     }
 
-    // Parse connection string
-    const conn = parseConnectionString(connectionString);
-
     // Get backup file path
     const backupDir = await getBackupDir();
     const filepath = path.join(backupDir, filename);
@@ -95,40 +91,32 @@ export default async function handler(
       });
     }
 
-    console.log(`[restore] Starting restore: ${filename} to ${conn.host}:${conn.port}/${conn.database}`);
-
-    // Build psql command to restore
-    const command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' psql ` +
-      `-h ${conn.host} ` +
-      `-p ${conn.port} ` +
-      `-U ${conn.user} ` +
-      `-d ${conn.database} ` +
-      `-f ${filepath}`;
-
-    // Execute restore
-    const { stdout, stderr } = await execAsync(command, {
-      maxBuffer: 10 * 1024 * 1024,
-      env: {
-        ...process.env,
-        PGPASSWORD: conn.password,
-      },
+    // Create background restore task
+    const task = await backupTaskService.createTask('restore', {
+      filename,
+      connectionString,
+      createdBy: req.headers['x-user'] as string || undefined,
     });
 
-    console.log(`[restore] Restore completed: ${filename}`);
+    // Update task with filepath
+    await backupTaskService.updateTask(task.id, { filepath });
 
-    res.status(200).json({
+    // Start restore in background (don't wait for completion)
+    backupTaskService.executeRestoreTask(task.id, connectionString).catch((error) => {
+      console.error(`[restore] Background task ${task.id} failed:`, error);
+    });
+
+    res.status(202).json({
       success: true,
-      filename,
-      message: 'Restore completed successfully',
-      stdout: stdout || undefined,
-      warnings: stderr || undefined,
+      taskId: task.id,
+      status: 'pending',
+      message: 'Restore task created and queued',
     });
   } catch (error: any) {
-    console.error('[restore] Error restoring backup:', error);
+    console.error('[restore] Error creating restore task:', error);
     res.status(500).json({
-      error: 'Failed to restore backup',
+      error: 'Failed to create restore task',
       message: error.message,
-      details: error.stderr || error.stdout,
     });
   }
 }

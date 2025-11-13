@@ -106,7 +106,6 @@ export function getDbPool(): Pool {
   
   // Log connection details (without password) for debugging
   const hasPassword = !!rawPassword;
-  const passwordLength = rawPassword ? rawPassword.length : 0;
   const usedFallback = rawPassword !== process.env.MONITORING_DB_PASSWORD;
   
   console.log('[db/connection] Initializing database pool:', {
@@ -115,12 +114,7 @@ export function getDbPool(): Pool {
     database,
     user,
     hasPassword,
-    passwordLength,
     usedFallback,
-    // Log first/last char of password (masked) to help debug encoding issues
-    passwordPreview: rawPassword 
-      ? `${rawPassword[0]}...${rawPassword[rawPassword.length - 1]}` 
-      : 'none',
   });
 
   const config: PoolConfig = {
