@@ -340,6 +340,43 @@ public.trading_stats_wallet`;
     }
   };
 
+  const handleCreateSubscriptionFromBackup = async (backupTaskId: string, subscriptionName: string) => {
+    if (!subscriptionName || !subscriptionName.trim()) {
+      setError('Subscription name is required');
+      return;
+    }
+
+    try {
+      setError(null);
+      setSuccess(null);
+
+      const res = await fetch('/api/subscriptions/create-from-backup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          backupTaskId,
+          subscriptionName: subscriptionName.trim(),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        setSuccess(`Subscription "${subscriptionName}" created successfully using slot from backup task`);
+        // Optionally redirect to subscription page
+        setTimeout(() => {
+          router.push(`/subscriptions`);
+        }, 2000);
+      } else {
+        setError(data.error || data.details || 'Failed to create subscription');
+      }
+    } catch (err: any) {
+      setError('Failed to create subscription: ' + err.message);
+    }
+  };
+
   const toggleTable = (tableName: string) => {
     const newSelected = new Set(selectedTables);
     if (newSelected.has(tableName)) {
@@ -1036,6 +1073,23 @@ public.trading_stats_wallet`;
                                     Delete
                                   </button>
                                 </>
+                              )}
+                              {task.status === 'completed' && task.slot_name && (
+                                <button
+                                  onClick={() => {
+                                    const defaultName = task.slot_name 
+                                      ? `subscription_${task.slot_name.replace('backup_slot_', '')}`
+                                      : 'subscription';
+                                    const subName = prompt('Enter subscription name:', defaultName);
+                                    if (subName) {
+                                      handleCreateSubscriptionFromBackup(task.id, subName);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                                  title="Create subscription using this backup's slot"
+                                >
+                                  Create Subscription
+                                </button>
                               )}
                               {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') && (
                                 <button
