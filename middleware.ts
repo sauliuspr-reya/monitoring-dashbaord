@@ -4,7 +4,7 @@ import type { NextRequest } from 'next/server';
 // Simple authentication using environment variables
 function getAuthConfig() {
   const username = process.env.AUTH_USERNAME || 'admin';
-  const password = process.env.AUTH_PASSWORD;
+  const password = process.env.AUTH_PASSWORD || 'reyalfg';
   const enabled = process.env.AUTH_ENABLED !== 'false'; // Default to enabled
   
   // Require password if auth is enabled

@@ -31,7 +31,7 @@ yarn-error.log*
 .env.production.local
 
 # Backup files (may contain sensitive data)
-backup/
+/backup/
 schema-backups/
 *.sql
 *.dump

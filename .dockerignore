@@ -28,7 +28,7 @@ build
 .env.production.local
 
 # Backup files (may contain sensitive data)
-backup/
+/backup/
 schema-backups/
 *.sql
 *.dump
@@ -57,5 +57,3 @@ coverage
 *.pem
 *.key
 *.crt
-
-backup/
