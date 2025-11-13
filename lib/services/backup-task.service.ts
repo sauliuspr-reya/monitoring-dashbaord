@@ -339,9 +339,23 @@ export class BackupTaskService {
 
       // Generate filename
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      const tableList = (task.tables || []).slice(0, 3).join('_');
-      const filename = `backup_${timestamp}_${tableList}${(task.tables?.length || 0) > 3 ? `_and_${(task.tables?.length || 0) - 3}_more` : ''}.sql`;
+      let filename: string;
+      if (task.tables && task.tables.length > 0) {
+        const tableList = task.tables.slice(0, 3).join('_');
+        filename = `backup_${timestamp}_${tableList}${task.tables.length > 3 ? `_and_${task.tables.length - 3}_more` : ''}.sql`;
+      } else if (task.exclude_tables && task.exclude_tables.length > 0) {
+        // For exclude mode, use a simpler filename
+        filename = `backup_${timestamp}_.sql`;
+      } else {
+        filename = `backup_${timestamp}_.sql`;
+      }
       const filepath = path.join(backupDir, filename);
+
+      // Set filepath immediately so file size polling can work while backup is running
+      await this.updateTask(taskId, {
+        filename,
+        filepath,
+      });
 
       // Build pg_dump command
       // Include tables (if specified)
