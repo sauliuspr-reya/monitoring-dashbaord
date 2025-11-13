@@ -72,10 +72,13 @@ export default async function handler(
     let publicationName: string | undefined;
     let slotInitialLsn: string | undefined;
 
+    // Don't enable replication for schema-only backups
+    const effectiveReplication = enableReplication && !schemaOnly;
+
     try {
       // Step 1: Create publication and slot if replication is enabled AND not schema-only
       // Schema-only backups don't need replication slots since there's no data to track
-      if (enableReplication && !schemaOnly) {
+      if (effectiveReplication) {
         // Generate names
         const timestamp = Date.now();
         publicationName = `backup_pub_${timestamp}`;

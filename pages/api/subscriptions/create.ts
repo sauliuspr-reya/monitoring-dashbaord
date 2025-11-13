@@ -189,46 +189,45 @@ export default async function handler(
         console.warn(`Replication slot '${slotName}' already exists on source. Will use existing slot.`);
       }
 
-        // Step 5: Create subscription on target
-        // Parse source connection for subscription connection string
-        // Handle both URL format and connection string format
-        let connString: string;
-        try {
-          const sourceUrl = new URL(finalSourceConnection);
-          const sourceHost = sourceUrl.hostname;
-          const sourcePort = sourceUrl.port || '5432';
-          const sourceUser = decodeURIComponent(sourceUrl.username);
-          const sourcePass = decodeURIComponent(sourceUrl.password);
-          const sourceDb = sourceUrl.pathname.slice(1).split('?')[0];
-          
-          // Escape single quotes in password
-          const escapedPass = sourcePass.replace(/'/g, "''");
-          connString = `host=${sourceHost} port=${sourcePort} dbname=${sourceDb} user=${sourceUser} password='${escapedPass}'`;
-        } catch (urlError) {
-          // If it's not a URL, assume it's already a connection string
-          connString = finalSourceConnection;
-        }
-
-        // Escape identifiers to prevent SQL injection
-        const escapedSubName = subscriptionName.replace(/"/g, '""');
-        const escapedPubName = publicationName.replace(/"/g, '""');
-        const escapedSlotName = slotName.replace(/'/g, "''");
-        // Escape connection string - replace single quotes with two single quotes
-        const escapedConnString = connString.replace(/'/g, "''");
+      // Step 5: Create subscription on target
+      // Parse source connection for subscription connection string
+      // Handle both URL format and connection string format
+      let connString: string;
+      try {
+        const sourceUrl = new URL(finalSourceConnection);
+        const sourceHost = sourceUrl.hostname;
+        const sourcePort = sourceUrl.port || '5432';
+        const sourceUser = decodeURIComponent(sourceUrl.username);
+        const sourcePass = decodeURIComponent(sourceUrl.password);
+        const sourceDb = sourceUrl.pathname.slice(1).split('?')[0];
         
-        await targetPool.query(`
-          CREATE SUBSCRIPTION "${escapedSubName}"
-          CONNECTION '${escapedConnString}'
-          PUBLICATION "${escapedPubName}"
-          WITH (
-            create_slot = ${createSlot},
-            slot_name = '${escapedSlotName}',
-            copy_data = ${dataCopy ? 'true' : 'false'},
-            enabled = true,
-            streaming = parallel
-          )
-        `);
+        // Escape single quotes in password
+        const escapedPass = sourcePass.replace(/'/g, "''");
+        connString = `host=${sourceHost} port=${sourcePort} dbname=${sourceDb} user=${sourceUser} password='${escapedPass}'`;
+      } catch (urlError) {
+        // If it's not a URL, assume it's already a connection string
+        connString = finalSourceConnection;
       }
+
+      // Escape identifiers to prevent SQL injection
+      const escapedSubName = subscriptionName.replace(/"/g, '""');
+      // escapedPubName already defined above at line 129
+      const escapedSlotName = slotName.replace(/'/g, "''");
+      // Escape connection string - replace single quotes with two single quotes
+      const escapedConnString = connString.replace(/'/g, "''");
+      
+      await targetPool.query(`
+        CREATE SUBSCRIPTION "${escapedSubName}"
+        CONNECTION '${escapedConnString}'
+        PUBLICATION "${escapedPubName}"
+        WITH (
+          create_slot = ${createSlot},
+          slot_name = '${escapedSlotName}',
+          copy_data = ${dataCopy ? 'true' : 'false'},
+          enabled = true,
+          streaming = parallel
+        )
+      `);
 
       // Step 6: Save to monitoring database
       const monitoringPool = getDbPool();

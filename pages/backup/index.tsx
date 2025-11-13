@@ -730,7 +730,7 @@ public.trading_stats_wallet`;
                       <textarea
                         value={excludeTablesText}
                         onChange={(e) => setExcludeTablesText(e.target.value)}
-                        placeholder='Paste table names here (one per line or comma-separated):&#10;public."AccountBalanceSeries"&#10;public."Candle"&#10;public.order_history'
+                        placeholder='Paste table names here (one per line or comma-separated):&#10;public.&quot;AccountBalanceSeries&quot;&#10;public.&quot;Candle&quot;&#10;public.order_history'
                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
                         rows={8}
                       />
@@ -755,7 +755,7 @@ public.trading_stats_wallet`;
                         </button>
                       </div>
                       <p className="text-xs text-gray-500">
-                        Supports both newline-separated and comma-separated formats. Table names can include schema prefix (e.g., "public.table" or just "table").
+                        Supports both newline-separated and comma-separated formats. Table names can include schema prefix (e.g., &quot;public.table&quot; or just &quot;table&quot;).
                       </p>
                     </div>
                   )}
@@ -970,14 +970,34 @@ public.trading_stats_wallet`;
                                   <span className="font-medium">Excluded:</span> {task.exclude_tables.length}
                                 </div>
                               )}
+                              {task.snapshot_id && (
+                                <div className="text-xs text-blue-600">
+                                  <span className="font-medium">Snapshot ID:</span> <span className="font-mono">{task.snapshot_id}</span>
+                                </div>
+                              )}
                               {task.slot_name && (
                                 <div className="text-xs text-blue-600">
-                                  <span className="font-medium">Slot:</span> {task.slot_name}
+                                  <span className="font-medium">Replication Slot:</span> <span className="font-mono">{task.slot_name}</span>
+                                </div>
+                              )}
+                              {task.publication_name && (
+                                <div className="text-xs text-blue-600">
+                                  <span className="font-medium">Publication:</span> <span className="font-mono">{task.publication_name}</span>
+                                </div>
+                              )}
+                              {task.slot_initial_lsn && (
+                                <div className="text-xs text-blue-600">
+                                  <span className="font-medium">Initial LSN:</span> <span className="font-mono">{task.slot_initial_lsn}</span>
+                                </div>
+                              )}
+                              {task.schema_only && (
+                                <div className="text-xs text-gray-500">
+                                  <span className="font-medium">Schema Only:</span> Yes
                                 </div>
                               )}
                               {task.error_message && (
                                 <div className="text-xs text-red-600 truncate max-w-xs" title={task.error_message}>
-                                  {task.error_message}
+                                  <span className="font-medium">Error:</span> {task.error_message}
                                 </div>
                               )}
                             </div>
