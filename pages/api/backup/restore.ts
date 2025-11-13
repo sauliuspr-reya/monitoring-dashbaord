@@ -63,8 +63,15 @@ export default async function handler(
       return res.status(400).json({ error: 'Backup filename is required' });
     }
 
-    if (!connectionString) {
-      return res.status(400).json({ error: 'Connection string is required' });
+    // Use DESTINATION_DATABASE_URL or TARGET_DATABASE_URL as default if not provided
+    const targetConnectionString = connectionString || 
+      process.env.DESTINATION_DATABASE_URL || 
+      process.env.TARGET_DATABASE_URL;
+
+    if (!targetConnectionString) {
+      return res.status(400).json({ 
+        error: 'Connection string is required. Provide connectionString in request or set DESTINATION_DATABASE_URL/TARGET_DATABASE_URL environment variable.' 
+      });
     }
 
     // Get backup file path
@@ -94,7 +101,7 @@ export default async function handler(
     // Create background restore task
     const task = await backupTaskService.createTask('restore', {
       filename,
-      connectionString,
+      connectionString: targetConnectionString,
       createdBy: req.headers['x-user'] as string || undefined,
     });
 
@@ -102,7 +109,7 @@ export default async function handler(
     await backupTaskService.updateTask(task.id, { filepath });
 
     // Start restore in background (don't wait for completion)
-    backupTaskService.executeRestoreTask(task.id, connectionString).catch((error) => {
+    backupTaskService.executeRestoreTask(task.id, targetConnectionString).catch((error) => {
       console.error(`[restore] Background task ${task.id} failed:`, error);
     });
 

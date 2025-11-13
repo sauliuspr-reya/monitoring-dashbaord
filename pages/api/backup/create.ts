@@ -67,8 +67,13 @@ export default async function handler(
   try {
     const { tables, connectionString, schemaOnly = false } = req.body;
 
-    if (!connectionString) {
-      return res.status(400).json({ error: 'Connection string is required' });
+    // Use SOURCE_DATABASE_URL as default if not provided
+    const sourceConnectionString = connectionString || process.env.SOURCE_DATABASE_URL;
+
+    if (!sourceConnectionString) {
+      return res.status(400).json({ 
+        error: 'Connection string is required. Provide connectionString in request or set SOURCE_DATABASE_URL environment variable.' 
+      });
     }
 
     if (!tables || !Array.isArray(tables) || tables.length === 0) {
@@ -97,13 +102,13 @@ export default async function handler(
     // Create background task
     const task = await backupTaskService.createTask('backup', {
       tables,
-      connectionString,
+      connectionString: sourceConnectionString,
       schemaOnly,
       createdBy: req.headers['x-user'] as string || undefined,
     });
 
     // Start backup in background (don't wait for completion)
-    backupTaskService.executeBackupTask(task.id, connectionString).catch((error) => {
+    backupTaskService.executeBackupTask(task.id, sourceConnectionString).catch((error) => {
       console.error(`[backup] Background task ${task.id} failed:`, error);
     });
 

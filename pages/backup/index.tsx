@@ -118,10 +118,8 @@ export default function BackupPage() {
       return;
     }
 
-    if (!connectionString) {
-      setError('Source connection string is required');
-      return;
-    }
+    // Connection string is optional if SOURCE_DATABASE_URL env var is set
+    // The API will use the env var as fallback
 
     try {
       setBackingUp(true);
@@ -144,7 +142,7 @@ export default function BackupPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tables: tablesToBackup,
-          connectionString,
+          connectionString: connectionString || undefined, // Only send if provided, API will use env var
           schemaOnly, // false = include data, true = schema only
         }),
       });
@@ -152,7 +150,11 @@ export default function BackupPage() {
       const data = await res.json();
 
       if (res.ok) {
-        setSuccess(`Backup created: ${data.filename} (${formatBytes(data.fileSize)})`);
+        if (data.taskId) {
+          setSuccess(`Backup task created (ID: ${data.taskId.substring(0, 8)}...). Check task status for progress.`);
+        } else {
+          setSuccess(`Backup created: ${data.filename} (${formatBytes(data.fileSize)})`);
+        }
         await loadBackups();
       } else {
         setError(data.error || 'Failed to create backup');
@@ -165,10 +167,8 @@ export default function BackupPage() {
   };
 
   const handleRestore = async (filename: string) => {
-    if (!targetConnectionString) {
-      setError('Target connection string is required');
-      return;
-    }
+    // Connection string is optional if DESTINATION_DATABASE_URL/TARGET_DATABASE_URL env var is set
+    // The API will use the env var as fallback
 
     if (!confirm(`Restore backup ${filename} to target database? This will overwrite existing tables.`)) {
       return;
@@ -184,7 +184,7 @@ export default function BackupPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename,
-          connectionString: targetConnectionString,
+          connectionString: targetConnectionString || undefined, // Only send if provided, API will use env var
           dryRun: false,
         }),
       });
@@ -192,7 +192,11 @@ export default function BackupPage() {
       const data = await res.json();
 
       if (res.ok) {
-        setSuccess(`Restore completed: ${filename}`);
+        if (data.taskId) {
+          setSuccess(`Restore task created (ID: ${data.taskId.substring(0, 8)}...). Check task status for progress.`);
+        } else {
+          setSuccess(`Restore completed: ${filename}`);
+        }
         await loadBackups();
       } else {
         setError(data.error || 'Failed to restore backup');
@@ -245,29 +249,35 @@ export default function BackupPage() {
           {/* Connection Strings */}
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">Database Connections</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Connection strings are optional if <code className="bg-gray-100 px-1 rounded">SOURCE_DATABASE_URL</code> and <code className="bg-gray-100 px-1 rounded">DESTINATION_DATABASE_URL</code> environment variables are set.
+              You can override them by providing custom connection strings below.
+            </p>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Source Database (for backup) *
+                  Source Database (for backup)
+                  {connectionString ? '' : <span className="text-gray-500 ml-1">(using SOURCE_DATABASE_URL)</span>}
                 </label>
                 <input
                   type="password"
                   value={connectionString}
                   onChange={(e) => setConnectionString(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder="postgresql://user:password@host:port/database"
+                  placeholder={connectionString ? "postgresql://user:password@host:port/database" : "Using SOURCE_DATABASE_URL from environment"}
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Target Database (for restore) *
+                  Target Database (for restore)
+                  {targetConnectionString ? '' : <span className="text-gray-500 ml-1">(using DESTINATION_DATABASE_URL)</span>}
                 </label>
                 <input
                   type="password"
                   value={targetConnectionString}
                   onChange={(e) => setTargetConnectionString(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                  placeholder="postgresql://user:password@host:port/database"
+                  placeholder={targetConnectionString ? "postgresql://user:password@host:port/database" : "Using DESTINATION_DATABASE_URL from environment"}
                 />
               </div>
             </div>
@@ -348,7 +358,7 @@ export default function BackupPage() {
 
             <button
               onClick={handleBackup}
-              disabled={backingUp || selectedTables.size === 0 || !connectionString}
+              disabled={backingUp || selectedTables.size === 0}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {backingUp ? 'Creating Backup...' : `Backup ${selectedTables.size} Table${selectedTables.size !== 1 ? 's' : ''}`}
@@ -389,7 +399,7 @@ export default function BackupPage() {
                         <td className="px-4 py-3 whitespace-nowrap text-center">
                           <button
                             onClick={() => handleRestore(backup.filename)}
-                            disabled={restoring[backup.filename] || !targetConnectionString}
+                            disabled={restoring[backup.filename]}
                             className="px-3 py-1.5 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                           >
                             {restoring[backup.filename] ? 'Restoring...' : 'Restore'}

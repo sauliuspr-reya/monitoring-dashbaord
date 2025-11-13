@@ -42,14 +42,18 @@ export default async function handler(
         targetDbConnection: destUrl,
       });
     } catch (kubectlError: any) {
-      // If kubectl fails, return empty (user will need to enter manually)
+      // If kubectl fails, fall back to environment variables
       console.log('[config/connections] ⚠️  kubectl failed (K8s not available or secret not found)');
       console.log(`[config/connections]   Error: ${kubectlError.message}`);
       console.log('[config/connections]   Falling back to environment variables');
       
+      // Get from environment variables as fallback
+      const sourceUrl = process.env.SOURCE_DATABASE_URL || '';
+      const destUrl = process.env.DESTINATION_DATABASE_URL || process.env.TARGET_DATABASE_URL || '';
+      
       res.status(200).json({
-        sourceDbConnection: '',
-        targetDbConnection: '',
+        sourceDbConnection: sourceUrl,
+        targetDbConnection: destUrl,
       });
     }
   } catch (error: any) {
