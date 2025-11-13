@@ -7,6 +7,7 @@ export default function Navbar() {
   const navItems = [
     { href: '/tables', label: 'Tables', icon: '📊' },
     { href: '/subscriptions', label: 'Subscriptions', icon: '🔄' },
+    { href: '/publications', label: 'Publications', icon: '📰' },
     { href: '/logs', label: 'Logs', icon: '📝' },
     { href: '/services', label: 'Services', icon: '⚙️' },
     { href: '/backup', label: 'Backup & Restore', icon: '💾' },
@@ -19,6 +20,9 @@ export default function Navbar() {
     }
     if (href === '/subscriptions') {
       return router.pathname.startsWith('/subscriptions') || router.pathname.startsWith('/groups');
+    }
+    if (href === '/publications') {
+      return router.pathname.startsWith('/publications');
     }
     if (href === '/logs') {
       return router.pathname === '/logs';

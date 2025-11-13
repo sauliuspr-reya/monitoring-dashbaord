@@ -19,11 +19,31 @@ export default function NewSubscription() {
   const [dataCopy, setDataCopy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [useExistingPublication, setUseExistingPublication] = useState(false);
+  const [existingPublications, setExistingPublications] = useState<Array<{name: string; tables: string[]; tableCount: number}>>([]);
+  const [selectedPublication, setSelectedPublication] = useState<string>('');
+  const [loadingPublications, setLoadingPublications] = useState(false);
 
   useEffect(() => {
     loadTables();
     loadConnectionStrings();
+    loadPublications();
   }, []);
+
+  const loadPublications = async () => {
+    try {
+      setLoadingPublications(true);
+      const res = await fetch('/api/publications/list');
+      if (res.ok) {
+        const data = await res.json();
+        setExistingPublications(data.publications || []);
+      }
+    } catch (err) {
+      console.error('Error loading publications:', err);
+    } finally {
+      setLoadingPublications(false);
+    }
+  };
 
   useEffect(() => {
     // Check if tables are pre-selected from query params
@@ -113,8 +133,10 @@ export default function NewSubscription() {
           description,
           sourceDbConnection: finalSourceConnection,
           targetDbConnection: finalTargetConnection,
-          customTables: selectedTables,
+          customTables: useExistingPublication ? undefined : selectedTables,
           dataCopy,
+          useExistingPublication,
+          existingPublicationName: useExistingPublication ? selectedPublication : undefined,
         }),
       });
 
@@ -204,12 +226,105 @@ export default function NewSubscription() {
             </div>
           </div>
 
-          {/* Table Selection */}
+          {/* Publication Selection */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              2. Select Tables ({selectedTables.length} selected)
+              2. Publication
             </h2>
-            <div className="mb-4">
+            <div className="space-y-4">
+              <div>
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="publicationMode"
+                    checked={!useExistingPublication}
+                    onChange={() => {
+                      setUseExistingPublication(false);
+                      setSelectedPublication('');
+                    }}
+                    className="mr-2"
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    Create new publication
+                  </span>
+                </label>
+                <p className="text-xs text-gray-500 ml-6 mt-1">
+                  A new publication will be created based on your subscription name and selected tables.
+                </p>
+              </div>
+              <div>
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="publicationMode"
+                    checked={useExistingPublication}
+                    onChange={() => setUseExistingPublication(true)}
+                    className="mr-2"
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    Use existing publication
+                  </span>
+                </label>
+                <p className="text-xs text-gray-500 ml-6 mt-1">
+                  Select an existing publication that was created previously.
+                </p>
+              </div>
+
+              {useExistingPublication && (
+                <div className="ml-6 mt-4 space-y-3">
+                  {loadingPublications ? (
+                    <div className="text-sm text-gray-500">Loading publications...</div>
+                  ) : existingPublications.length === 0 ? (
+                    <div className="text-sm text-gray-500">
+                      No publications found. <Link href="/publications" className="text-blue-600 hover:text-blue-800">Create one</Link>
+                    </div>
+                  ) : (
+                    <>
+                      <select
+                        value={selectedPublication}
+                        onChange={(e) => setSelectedPublication(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Select a publication...</option>
+                        {existingPublications.map((pub) => (
+                          <option key={pub.name} value={pub.name}>
+                            {pub.name} ({pub.tableCount} table{pub.tableCount !== 1 ? 's' : ''})
+                          </option>
+                        ))}
+                      </select>
+                      {selectedPublication && (
+                        <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+                          <div className="text-sm font-medium text-gray-900 mb-2">
+                            Tables in this publication:
+                          </div>
+                          <div className="max-h-32 overflow-y-auto">
+                            <ul className="list-disc list-inside text-xs font-mono text-gray-600 space-y-1">
+                              {existingPublications.find(p => p.name === selectedPublication)?.tables.slice(0, 20).map((table) => (
+                                <li key={table}>{table}</li>
+                              ))}
+                              {(existingPublications.find(p => p.name === selectedPublication)?.tables.length || 0) > 20 && (
+                                <li className="text-gray-500">
+                                  ... and {(existingPublications.find(p => p.name === selectedPublication)?.tables.length || 0) - 20} more
+                                </li>
+                              )}
+                            </ul>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Table Selection - Only show if creating new publication */}
+          {!useExistingPublication && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                3. Select Tables ({selectedTables.length} selected)
+              </h2>
+              <div className="mb-4">
               <input
                 type="text"
                 value={searchQuery}
@@ -256,11 +371,12 @@ export default function NewSubscription() {
               )}
             </div>
           </div>
+          )}
 
           {/* Connection Strings */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              3. Database Connections
+              {useExistingPublication ? '3. Database Connections' : '4. Database Connections'}
             </h2>
             <div className="mb-4">
               <label className="flex items-center">
@@ -333,7 +449,7 @@ export default function NewSubscription() {
           {/* Data Copy Option */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              4. Replication Settings
+              {useExistingPublication ? '4. Replication Settings' : '5. Replication Settings'}
             </h2>
             <div className="space-y-4">
               <div>
@@ -375,7 +491,7 @@ export default function NewSubscription() {
             </Link>
             <button
               type="submit"
-              disabled={creating || selectedTables.length === 0 || !name}
+              disabled={creating || (!useExistingPublication && selectedTables.length === 0) || (useExistingPublication && !selectedPublication) || !name}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {creating ? 'Creating...' : 'Create Subscription'}
