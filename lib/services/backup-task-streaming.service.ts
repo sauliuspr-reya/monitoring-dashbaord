@@ -163,6 +163,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
       // pg_dump sends progress messages, table dumps, etc. to stderr
       childProcess.stderr?.on('data', async (data: Buffer) => {
         const text = data.toString('utf-8');
+        // Update stderr activity time - this indicates the process is making progress
+        lastStderrActivityTime = Date.now();
+        
         // Preserve all lines including empty ones for formatting
         const lines = text.split('\n');
         for (let i = 0; i < lines.length; i++) {
@@ -248,9 +251,10 @@ export class BackupTaskStreamingService extends BackupTaskService {
       // Update file size periodically during execution and detect failures
       let lastFileSize = 0;
       let lastFileSizeTime = Date.now();
+      let lastStderrActivityTime = Date.now();
       let fileCreatedTime: number | null = null;
       const FILE_CREATION_TIMEOUT = 5 * 60 * 1000; // 5 minutes to create file
-      const FILE_STALL_TIMEOUT = 2 * 60 * 1000; // 2 minutes without growth = stalled
+      const FILE_STALL_TIMEOUT = 15 * 60 * 1000; // 15 minutes without growth = stalled (for large tables)
       const taskStartTime = startTime; // Capture start time for timeout checks
       
       const sizeCheckInterval = setInterval(async () => {
@@ -270,14 +274,52 @@ export class BackupTaskStreamingService extends BackupTaskService {
             lastFileSize = currentSize;
             lastFileSizeTime = now;
           } else if (currentSize > 0 && (now - lastFileSizeTime) > FILE_STALL_TIMEOUT) {
-            // File exists but hasn't grown in 2 minutes
-            const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes`;
-            stderrLineCount++;
-            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
-            await this.updateTask(taskId, {
-              status: 'stalled',
-              error_message: errorMsg,
-            });
+            // File hasn't grown in a while - check if process is still running and if stderr is active
+            let processRunning = false;
+            try {
+              // Check if the shell process is still running
+              process.kill(childProcess.pid || 0, 0); // Signal 0 just checks if process exists
+              processRunning = true;
+            } catch {
+              // Process doesn't exist
+              processRunning = false;
+            }
+            
+            // Check if stderr has been active recently (within last 5 minutes)
+            const stderrActiveRecently = (now - lastStderrActivityTime) < 5 * 60 * 1000;
+            
+            if (!processRunning) {
+              // Process is not running AND file hasn't grown - definitely stalled
+              const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes and process is not running`;
+              stderrLineCount++;
+              await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+              await this.updateTask(taskId, {
+                status: 'stalled',
+                error_message: errorMsg,
+              });
+            } else if (!stderrActiveRecently) {
+              // Process is running but no stderr activity - might be stuck
+              const minutesSinceStderr = Math.round((now - lastStderrActivityTime) / 1000 / 60);
+              const minutesSinceGrowth = Math.round((now - lastFileSizeTime) / 1000 / 60);
+              if (minutesSinceStderr > 10) {
+                // No stderr activity for 10+ minutes - likely stalled
+                const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${minutesSinceGrowth} minutes, no stderr output for ${minutesSinceStderr} minutes (process may be stuck)`;
+                stderrLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+                await this.updateTask(taskId, {
+                  status: 'stalled',
+                  error_message: errorMsg,
+                });
+              }
+            } else {
+              // Process is running AND stderr is active - just processing a large table, don't mark as stalled
+              const minutesSinceGrowth = Math.round((now - lastFileSizeTime) / 1000 / 60);
+              if (minutesSinceGrowth % 5 === 0 && minutesSinceGrowth > 0) {
+                // Log every 5 minutes to avoid spam
+                stdoutLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stdout', `ℹ File size hasn't changed in ${minutesSinceGrowth} minutes, but process is running and producing output (processing large table)`, stdoutLineCount).catch(() => {});
+              }
+            }
           }
           
           await this.updateTask(taskId, {

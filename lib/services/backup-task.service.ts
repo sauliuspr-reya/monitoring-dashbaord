@@ -633,13 +633,13 @@ export class BackupTaskService {
   /**
    * Check for stalled backup and restore tasks and update their status
    * A task is considered stalled if:
-   * 1. It's been running for more than 2 minutes without file size change, OR
-   * 2. It's been running but hasn't updated its status in more than 2 minutes, OR
-   * 3. The process has exited but the task is still marked as running
+   * 1. The process has exited but the task is still marked as running, OR
+   * 2. It's been running but hasn't updated its status in more than 15 minutes (for large tables)
+   * Note: File size not changing is NOT enough - we also check if process is running
    */
   async checkForStalledTasks(): Promise<{ checked: number; stalled: number }> {
     const pool = getDbPool();
-    const STALL_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+    const STALL_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes (for large tables that take time)
     const now = new Date();
 
     // Get all running tasks (both backup and restore)
