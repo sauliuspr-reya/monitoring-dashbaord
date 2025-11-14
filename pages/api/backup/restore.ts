@@ -98,19 +98,25 @@ export default async function handler(
     }
 
     // Create background restore task
+    console.log(`[restore] Creating restore task for file: ${filename}`);
     const task = await backupTaskService.createTask('restore', {
       filename,
       connectionString: targetConnectionString,
       createdBy: req.headers['x-user'] as string || undefined,
     });
 
+    console.log(`[restore] Task created with ID: ${task.id}, status: ${task.status}`);
+
     // Update task with filepath
     await backupTaskService.updateTask(task.id, { filepath });
 
+    console.log(`[restore] Starting restore task ${task.id} in background...`);
     // Start restore in background with streaming (don't wait for completion)
     backupTaskStreamingService.executeRestoreTaskStreaming(task.id, targetConnectionString).catch((error) => {
       console.error(`[restore] Background task ${task.id} failed:`, error);
     });
+
+    console.log(`[restore] Restore task ${task.id} queued successfully`);
 
     res.status(202).json({
       success: true,

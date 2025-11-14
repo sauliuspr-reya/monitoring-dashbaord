@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 
 interface TableInfo {
   tableName: string;
@@ -12,7 +12,12 @@ interface TableInfo {
   rateOfChange1Hour?: number | null;
   rateOfChange24Hour?: number | null;
   loading?: boolean;
+  lastBackupDate?: string;
+  lastBackupId?: string;
 }
+
+type SortColumn = 'table' | 'rows' | 'size' | 'writers' | 'lastBackup';
+type SortDirection = 'asc' | 'desc';
 
 interface BackupModalProps {
   isOpen: boolean;
@@ -41,6 +46,9 @@ export default function BackupModal({
   const [searchQuery, setSearchQuery] = useState('');
   const [schemaOnly, setSchemaOnly] = useState(false);
   const [enableReplication, setEnableReplication] = useState(true);
+  const [sortColumn, setSortColumn] = useState<SortColumn>('table');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [backupInfoMap, setBackupInfoMap] = useState<Map<string, { lastBackupDate?: string; lastBackupId?: string }>>(new Map());
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -68,9 +76,120 @@ export default function BackupModal({
     return `${(num / 1000000).toFixed(1)}M`;
   };
 
-  const filteredTables = tables.filter(table =>
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return '—';
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString();
+  };
+
+  // Fetch backup info when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/tables/backup-info')
+        .then(res => res.json())
+        .then(data => {
+          const map = new Map();
+          (data.backupInfo || []).forEach((info: any) => {
+            map.set(info.tableName, {
+              lastBackupDate: info.lastBackupDate,
+              lastBackupId: info.lastBackupId,
+            });
+          });
+          setBackupInfoMap(map);
+        })
+        .catch(err => console.error('Error fetching backup info:', err));
+    }
+  }, [isOpen]);
+
+  // Merge backup info into tables
+  const tablesWithBackupInfo = useMemo(() => {
+    return tables.map(table => {
+      const backupInfo = backupInfoMap.get(table.table);
+      return {
+        ...table,
+        lastBackupDate: backupInfo?.lastBackupDate,
+        lastBackupId: backupInfo?.lastBackupId,
+      };
+    });
+  }, [tables, backupInfoMap]);
+
+  const filteredTables = tablesWithBackupInfo.filter(table =>
     table.table.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Sort tables
+  const sortedTables = useMemo(() => {
+    const sorted = [...filteredTables];
+    sorted.sort((a, b) => {
+      let aVal: any;
+      let bVal: any;
+
+      switch (sortColumn) {
+        case 'table':
+          aVal = a.table.toLowerCase();
+          bVal = b.table.toLowerCase();
+          break;
+        case 'rows':
+          aVal = a.sourceRowCount;
+          bVal = b.sourceRowCount;
+          break;
+        case 'size':
+          aVal = a.sourceSize;
+          bVal = b.sourceSize;
+          break;
+        case 'writers':
+          // Get writer count for sorting
+          const aSourceCount = a.writersOnSource?.length || 0;
+          const aTargetCount = a.writersOnTarget?.length || 0;
+          const bSourceCount = b.writersOnSource?.length || 0;
+          const bTargetCount = b.writersOnTarget?.length || 0;
+          aVal = aSourceCount + aTargetCount;
+          bVal = bSourceCount + bTargetCount;
+          break;
+        case 'lastBackup':
+          aVal = a.lastBackupDate ? new Date(a.lastBackupDate).getTime() : 0;
+          bVal = b.lastBackupDate ? new Date(b.lastBackupDate).getTime() : 0;
+          break;
+        default:
+          return 0;
+      }
+
+      if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [filteredTables, sortColumn, sortDirection]);
+
+  const handleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const SortIcon = ({ column }: { column: SortColumn }) => {
+    if (sortColumn !== column) {
+      return <span className="text-gray-400 ml-1">↕</span>;
+    }
+    return sortDirection === 'asc' ? (
+      <span className="text-blue-600 ml-1">↑</span>
+    ) : (
+      <span className="text-blue-600 ml-1">↓</span>
+    );
+  };
 
   const toggleTable = (tableName: string) => {
     const newSelected = new Set(selectedTables);
@@ -83,7 +202,7 @@ export default function BackupModal({
   };
 
   const selectAll = () => {
-    setSelectedTables(new Set(filteredTables.map(t => t.table)));
+    setSelectedTables(new Set(sortedTables.map(t => t.table)));
   };
 
   const deselectAll = () => {
@@ -226,7 +345,7 @@ export default function BackupModal({
             )}
             <div className="flex-1"></div>
             <span className="text-xs text-gray-500 self-center">
-              {filteredTables.length} table{filteredTables.length !== 1 ? 's' : ''}
+              {sortedTables.length} table{sortedTables.length !== 1 ? 's' : ''}
             </span>
           </div>
 
@@ -239,7 +358,7 @@ export default function BackupModal({
                     <th className="px-4 py-2 w-12">
                       <input
                         type="checkbox"
-                        checked={filteredTables.length > 0 && filteredTables.every(t => selectedTables.has(t.table))}
+                        checked={sortedTables.length > 0 && sortedTables.every(t => selectedTables.has(t.table))}
                         onChange={(e) => {
                           if (e.target.checked) {
                             selectAll();
@@ -250,28 +369,55 @@ export default function BackupModal({
                         className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
                     </th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase">Table</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase">Rows</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase">Size</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase">Writers</th>
+                    <th 
+                      className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('table')}
+                    >
+                      Table <SortIcon column="table" />
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('rows')}
+                    >
+                      Rows <SortIcon column="rows" />
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('size')}
+                    >
+                      Size <SortIcon column="size" />
+                    </th>
+                    <th 
+                      className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('writers')}
+                    >
+                      Writers <SortIcon column="writers" />
+                    </th>
                     <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase">Change Rate</th>
+                    <th 
+                      className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                      onClick={() => handleSort('lastBackup')}
+                    >
+                      Last Backup <SortIcon column="lastBackup" />
+                    </th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase">Backup ID</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {loading ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                         Loading tables...
                       </td>
                     </tr>
-                  ) : filteredTables.length === 0 ? (
+                  ) : sortedTables.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                         No tables found
                       </td>
                     </tr>
                   ) : (
-                    filteredTables.map((table) => (
+                    sortedTables.map((table) => (
                       <tr
                         key={table.tableName}
                         className={`hover:bg-gray-50 cursor-pointer ${
@@ -338,6 +484,24 @@ export default function BackupModal({
                             <span className="font-mono text-xs">
                               {formatRateOfChange(table.rateOfChange1Hour)}
                             </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-600">
+                          {table.lastBackupDate ? (
+                            <span className="text-xs" title={new Date(table.lastBackupDate).toLocaleString()}>
+                              {formatDate(table.lastBackupDate)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-600">
+                          {table.lastBackupId ? (
+                            <span className="text-xs font-mono text-blue-600" title={table.lastBackupId}>
+                              {table.lastBackupId.substring(0, 8)}...
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
                           )}
                         </td>
                       </tr>
