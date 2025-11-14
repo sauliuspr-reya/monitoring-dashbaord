@@ -90,7 +90,11 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
-  console.log('[tables/all] ========== API Request Started ==========');
+  // Only log detailed debug info if explicitly requested
+  const debugMode = req.query.debug === 'true';
+  if (debugMode) {
+    console.log('[tables/all] ========== API Request Started ==========');
+  }
   
   if (req.method !== 'GET') {
     res.setHeader('Allow', ['GET']);
@@ -103,7 +107,9 @@ export default async function handler(
   const now = Date.now();
   
   if (cached && (now - cached.timestamp) < CACHE_TTL) {
-    console.log('[tables/all] Returning cached data');
+    if (debugMode) {
+      console.log('[tables/all] Returning cached data');
+    }
     return res.status(200).json(cached.data);
   }
 
@@ -112,7 +118,9 @@ export default async function handler(
 
   try {
     const pool = getDbPool();
-    console.log('[tables/all] Connected to monitoring database');
+    if (debugMode) {
+      console.log('[tables/all] Connected to monitoring database');
+    }
     
     // Get all subscriptions to map tables
     const subscriptionsResult = await pool.query(`
@@ -122,7 +130,14 @@ export default async function handler(
     `);
 
     const subscriptions = subscriptionsResult.rows;
-    console.log(`[tables/all] Found ${subscriptions.length} subscriptions in monitoring DB`);
+    // Only log subscription count, not every detail
+    if (debugMode) {
+      if (subscriptions.length === 0) {
+        console.log(`[tables/all] No subscriptions found. Metrics tracking will be skipped.`);
+      } else {
+        console.log(`[tables/all] Found ${subscriptions.length} subscriptions`);
+      }
+    }
 
     // Initialize rate of change service and fetch all latest rates
     // Gracefully handle if table doesn't exist yet
@@ -181,22 +196,26 @@ export default async function handler(
       targetConnection = process.env.TARGET_DATABASE_URL || null;
     }
     
-    // Debug: Check what's actually in process.env
-    console.log('[tables/all] Environment variables check:');
-    console.log(`  process.env.SOURCE_DATABASE_URL: ${process.env.SOURCE_DATABASE_URL ? 'SET (' + process.env.SOURCE_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
-    console.log(`  process.env.TARGET_DATABASE_URL: ${process.env.TARGET_DATABASE_URL ? 'SET (' + process.env.TARGET_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
-    
-    // Log what we found (hide passwords)
-    console.log('[tables/all] Connection status:');
-    console.log(`  Source: ${sourceConnection ? sourceConnection.replace(/:[^:@]+@/, ':***@').substring(0, 60) + '...' : 'NOT SET'}`);
-    console.log(`  Target: ${targetConnection ? targetConnection.replace(/:[^:@]+@/, ':***@').substring(0, 60) + '...' : 'NOT SET'}`);
+    // Debug: Check what's actually in process.env (only in debug mode)
+    if (debugMode) {
+      console.log('[tables/all] Environment variables check:');
+      console.log(`  process.env.SOURCE_DATABASE_URL: ${process.env.SOURCE_DATABASE_URL ? 'SET (' + process.env.SOURCE_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
+      console.log(`  process.env.TARGET_DATABASE_URL: ${process.env.TARGET_DATABASE_URL ? 'SET (' + process.env.TARGET_DATABASE_URL.substring(0, 30) + '...)' : 'NOT SET'}`);
+      
+      // Log what we found (hide passwords)
+      console.log('[tables/all] Connection status:');
+      console.log(`  Source: ${sourceConnection ? sourceConnection.replace(/:[^:@]+@/, ':***@').substring(0, 60) + '...' : 'NOT SET'}`);
+      console.log(`  Target: ${targetConnection ? targetConnection.replace(/:[^:@]+@/, ':***@').substring(0, 60) + '...' : 'NOT SET'}`);
+    }
 
     // We need at least ONE database connection (prefer target/GCP as it's the destination)
     // This breaks the catch-22: we can show tables from GCP even without a subscription
     if (!sourceConnection && !targetConnection) {
-      console.log('[tables/all] ❌ ERROR: No database connections available!');
-      console.log('[tables/all] Please add to .env.local:');
-      console.log('[tables/all]   TARGET_DATABASE_URL=postgresql://user:pass@host:5432/dbname');
+      console.error('[tables/all] ❌ ERROR: No database connections available!');
+      if (debugMode) {
+        console.log('[tables/all] Please add to .env.local:');
+        console.log('[tables/all]   TARGET_DATABASE_URL=postgresql://user:pass@host:5432/dbname');
+      }
       return res.status(200).json({ 
         tables: [], 
         totalTables: 0,
@@ -205,7 +224,9 @@ export default async function handler(
       });
     }
     
-    console.log('[tables/all] ✓ At least one database connection available');
+    if (debugMode) {
+      console.log('[tables/all] ✓ At least one database connection available');
+    }
 
     // Create pools only for available connections
     const sourcePool = sourceConnection ? createSourceTargetPool(sourceConnection) : null;
@@ -441,8 +462,10 @@ export default async function handler(
             targetTablesPromise
           ]);
 
-      console.log(`[tables/all] Found ${sourceTablesResult.rows.length} tables in source`);
-      console.log(`[tables/all] Found ${targetTablesResult.rows.length} tables in target`);
+      if (debugMode) {
+        console.log(`[tables/all] Found ${sourceTablesResult.rows.length} tables in source`);
+        console.log(`[tables/all] Found ${targetTablesResult.rows.length} tables in target`);
+      }
 
       // Merge tables from both databases, using a Set to avoid duplicates
       const allTablesMap = new Map<string, { table_name: string; schemaname: string; tablename: string }>();
@@ -457,7 +480,9 @@ export default async function handler(
         allTablesMap.set(row.table_name, row);
       }
       
-      console.log(`[tables/all] Total unique tables: ${allTablesMap.size}`);
+      if (debugMode) {
+        console.log(`[tables/all] Total unique tables: ${allTablesMap.size}`);
+      }
       
       // Convert to array sorted by table name
       const allTables = Array.from(allTablesMap.values()).sort((a, b) => 
@@ -759,48 +784,21 @@ export default async function handler(
                 // Store current metrics for future rate calculations
                 // Use the first subscription's ID to store metrics for ALL tables (even if not in subscription)
                 // This allows us to track metrics globally while respecting the NOT NULL constraint
-                try {
-                  const metricsIdColumnCheck = await monitoringPool.query(`
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = 'table_replication_metrics' 
-                      AND column_name IN ('subscription_id', 'group_id')
-                    LIMIT 1
-                  `).catch(() => ({ rows: [] }));
-                  
-                  const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
-                  
-                  // Get or create a "global" subscription ID for tracking all tables
-                  // Use the global subscriptions list (not tableSubs which is just for this table)
-                  // We need to reference the outer scope subscriptions variable
-                  let subscriptionIdForMetrics: string | null = null;
-                  
-                  // Access the outer scope subscriptions variable (all subscriptions, not just this table's)
-                  const allSubscriptions = subscriptionsResult.rows;
-                  if (allSubscriptions && allSubscriptions.length > 0) {
-                    subscriptionIdForMetrics = allSubscriptions[0].id;
-                  } else {
-                    // If subscriptions array is empty, query the database directly
-                    // This handles the case where subscriptions weren't loaded or query failed
-                    try {
-                      const subCheck = await monitoringPool.query(`
-                        SELECT id FROM subscriptions LIMIT 1
-                      `).catch(() => ({ rows: [] }));
-                      
-                      if (subCheck.rows && subCheck.rows.length > 0) {
-                        subscriptionIdForMetrics = subCheck.rows[0].id;
-                      } else {
-                        console.warn(`[tables/all] No subscriptions found in database. allSubscriptions array length: ${allSubscriptions?.length || 0}`);
-                      }
-                    } catch (err: any) {
-                      console.error(`[tables/all] Error querying for subscriptions:`, err.message);
-                    }
-                  }
-                  
-                // Store metrics using the subscription ID (even if table is not in that subscription)
-                // This allows us to track rate of change for all tables
-                // If no subscriptions exist, we skip metrics storage (it's optional anyway)
-                if (subscriptionIdForMetrics) {
+                // Only attempt to store metrics if we have subscriptions (checked once outside the loop)
+                if (subscriptions.length > 0) {
+                  try {
+                    const metricsIdColumnCheck = await monitoringPool.query(`
+                      SELECT column_name 
+                      FROM information_schema.columns 
+                      WHERE table_name = 'table_replication_metrics' 
+                        AND column_name IN ('subscription_id', 'group_id')
+                      LIMIT 1
+                    `).catch(() => ({ rows: [] }));
+                    
+                    const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
+                    
+                    // Use the first subscription's ID for metrics tracking
+                    const subscriptionIdForMetrics = subscriptions[0].id;
                   const tableNameForStorage = table; // Store just the table name, not schema.table
                   await monitoringPool.query(`
                     INSERT INTO table_replication_metrics (
@@ -819,15 +817,19 @@ export default async function handler(
                     sourceCount - targetCount,
                     sourceCount === targetCount ? 'synced' : sourceCount > targetCount ? 'lagging' : 'error',
                   ]).catch((err) => {
-                    // Log but ignore - rate tracking is optional
-                    console.warn(`[tables/all] Failed to store metrics for ${table}:`, err.message);
+                    // Log but ignore - rate tracking is optional (only log first few errors to avoid spam)
+                    if (i < 3) {
+                      console.warn(`[tables/all] Failed to store metrics for ${table}:`, err.message);
+                    }
                   });
+                  } catch (err) {
+                    // Ignore - rate tracking is optional (only log first few errors to avoid spam)
+                    if (i < 3) {
+                      console.warn(`[tables/all] Error storing metrics for ${table}:`, err);
+                    }
+                  }
                 }
-                // Note: If no subscriptions exist, metrics tracking is disabled (this is fine - it's optional)
-                } catch (err) {
-                  // Ignore - rate tracking is optional
-                  console.warn(`[tables/all] Error storing metrics for ${table}:`, err);
-                }
+                // Note: If no subscriptions exist, metrics tracking is skipped (this is fine - it's optional)
 
                 return {
                   tableName,
@@ -920,8 +922,10 @@ export default async function handler(
       });
       
 
-      console.log(`[tables/all] ✓ Returning ${response.tables.length} tables`);
-      console.log('[tables/all] ========== API Request Complete ==========');
+      if (debugMode) {
+        console.log(`[tables/all] ✓ Returning ${response.tables.length} tables`);
+        console.log('[tables/all] ========== API Request Complete ==========');
+      }
       
       res.status(200).json(response);
     } finally {
@@ -930,9 +934,11 @@ export default async function handler(
       if (targetPool) await targetPool.end().catch(() => {});
     }
   } catch (error: any) {
-    console.error('[tables/all] ❌ ERROR:', error);
-    console.error('[tables/all] Stack trace:', error.stack);
-    console.log('[tables/all] ========== API Request Failed ==========');
+    console.error('[tables/all] ❌ ERROR:', error.message);
+    if (debugMode) {
+      console.error('[tables/all] Stack trace:', error.stack);
+      console.log('[tables/all] ========== API Request Failed ==========');
+    }
     res.status(500).json({ error: error.message || 'Failed to get tables' });
   }
 }

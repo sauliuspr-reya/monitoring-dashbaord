@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { BackupTaskService } from '@/lib/services/backup-task.service';
+import { backupTaskStreamingService } from '@/lib/services/backup-task-streaming.service';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -106,8 +107,8 @@ export default async function handler(
     // Update task with filepath
     await backupTaskService.updateTask(task.id, { filepath });
 
-    // Start restore in background (don't wait for completion)
-    backupTaskService.executeRestoreTask(task.id, targetConnectionString).catch((error) => {
+    // Start restore in background with streaming (don't wait for completion)
+    backupTaskStreamingService.executeRestoreTaskStreaming(task.id, targetConnectionString).catch((error) => {
       console.error(`[restore] Background task ${task.id} failed:`, error);
     });
 

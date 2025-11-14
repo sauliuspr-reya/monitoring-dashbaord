@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { BackupTaskService } from '@/lib/services/backup-task.service';
+import { backupTaskStreamingService } from '@/lib/services/backup-task-streaming.service';
 
 const backupTaskService = new BackupTaskService();
 
@@ -48,9 +49,9 @@ export default async function handler(
       });
     }
   } else if (req.method === 'POST') {
-    // Cancel task
+    // Cancel task (use streaming service to kill running process)
     try {
-      await backupTaskService.cancelTask(id);
+      await backupTaskStreamingService.cancelTask(id);
 
       res.status(200).json({
         success: true,

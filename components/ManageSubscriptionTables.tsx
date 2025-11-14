@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface Table {
   name: string;
@@ -29,11 +29,7 @@ export default function ManageSubscriptionTables({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadAvailableTables();
-  }, [subscriptionId]);
-
-  const loadAvailableTables = async () => {
+  const loadAvailableTables = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -46,7 +42,11 @@ export default function ManageSubscriptionTables({
     } finally {
       setLoading(false);
     }
-  };
+  }, [subscriptionId]);
+
+  useEffect(() => {
+    loadAvailableTables();
+  }, [subscriptionId, loadAvailableTables]);
 
   const handleAddTables = async () => {
     const tablesToAdd = Array.from(selectedTables);

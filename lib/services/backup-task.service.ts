@@ -64,7 +64,7 @@ export class BackupTaskService {
    * Handles: "public.table", 'public."Table"', table, etc.
    * Returns: public."Table" or public.table (properly quoted)
    */
-  private normalizeTableName(tableName: string): string {
+  protected normalizeTableName(tableName: string): string {
     // Remove existing quotes if present
     let cleaned = tableName.replace(/^["']|["']$/g, '').trim();
     
@@ -548,7 +548,7 @@ export class BackupTaskService {
   /**
    * Get backup directory
    */
-  private async getBackupDir(): Promise<string> {
+  protected async getBackupDir(): Promise<string> {
     if (process.env.BACKUP_DIR) {
       return process.env.BACKUP_DIR;
     }
@@ -564,7 +564,7 @@ export class BackupTaskService {
   /**
    * Parse connection string
    */
-  private parseConnectionString(connString: string) {
+  protected parseConnectionString(connString: string) {
     try {
       const url = new URL(connString);
       return {

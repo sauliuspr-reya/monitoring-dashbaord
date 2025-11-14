@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface LogEntry {
   timestamp: string;
@@ -33,16 +33,7 @@ export default function ReplicationLogs({
   const [expandedLog, setExpandedLog] = useState<number | null>(null);
   const [timeRange, setTimeRange] = useState<string>(defaultTimeRange);
 
-  useEffect(() => {
-    loadLogs();
-
-    if (autoRefresh) {
-      const interval = setInterval(loadLogs, refreshInterval);
-      return () => clearInterval(interval);
-    }
-  }, [subscriptionId, autoRefresh, refreshInterval]);
-
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     try {
       const url = subscriptionId
         ? `/api/subscriptions/${subscriptionId}/logs`
@@ -59,7 +50,16 @@ export default function ReplicationLogs({
     } finally {
       setLoading(false);
     }
-  };
+  }, [subscriptionId]);
+
+  useEffect(() => {
+    loadLogs();
+
+    if (autoRefresh) {
+      const interval = setInterval(loadLogs, refreshInterval);
+      return () => clearInterval(interval);
+    }
+  }, [subscriptionId, autoRefresh, refreshInterval, loadLogs]);
 
   const filteredLogs = logs.filter(log => {
     if (filterLevel !== 'all' && log.level !== filterLevel) return false;

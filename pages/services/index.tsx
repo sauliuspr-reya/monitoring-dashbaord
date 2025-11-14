@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Navbar from '@/components/Navbar';
 import Link from 'next/link';
 
@@ -37,13 +37,7 @@ export default function ServicesPage() {
   const [locationFilter, setLocationFilter] = useState<string>('all');
   const [selectedService, setSelectedService] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadWriteStats();
-    const interval = setInterval(loadWriteStats, 300000); // Refresh every 5 minutes
-    return () => clearInterval(interval);
-  }, [hours]);
-
-  const loadWriteStats = async () => {
+  const loadWriteStats = useCallback(async () => {
     try {
       setLoading(true);
       const res = await fetch(`/api/services/write-stats?hours=${hours}&_t=${Date.now()}`);
@@ -70,7 +64,13 @@ export default function ServicesPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [hours]);
+
+  useEffect(() => {
+    loadWriteStats();
+    const interval = setInterval(loadWriteStats, 300000); // Refresh every 5 minutes
+    return () => clearInterval(interval);
+  }, [hours, loadWriteStats]);
 
   // Group by display name (ServiceName-Database) or application name
   // This creates separate entries for the same service writing to different databases

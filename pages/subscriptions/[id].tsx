@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { ReplicationStatus } from '@/lib/types';
@@ -18,18 +18,7 @@ export default function SubscriptionDetails() {
   const [deleting, setDeleting] = useState(false);
   const [showManageTables, setShowManageTables] = useState(false);
 
-  useEffect(() => {
-    if (id) {
-      loadSubscriptionDetails();
-      // Tables and logs now refresh together in ReplicationStatus component
-      const interval = setInterval(() => {
-        loadSubscriptionDetails();
-      }, 15000); // Refresh subscription status every 15 seconds (matches ReplicationStatus)
-      return () => clearInterval(interval);
-    }
-  }, [id]);
-
-  const loadSubscriptionDetails = async () => {
+  const loadSubscriptionDetails = useCallback(async () => {
     if (!id) return;
     
     try {
@@ -46,7 +35,18 @@ export default function SubscriptionDetails() {
       setError(err.message);
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    if (id) {
+      loadSubscriptionDetails();
+      // Tables and logs now refresh together in ReplicationStatus component
+      const interval = setInterval(() => {
+        loadSubscriptionDetails();
+      }, 15000); // Refresh subscription status every 15 seconds (matches ReplicationStatus)
+      return () => clearInterval(interval);
+    }
+  }, [id, loadSubscriptionDetails]);
 
   // Tables and logs now loaded by ReplicationStatus component
 

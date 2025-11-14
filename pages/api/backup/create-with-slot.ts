@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { BackupTaskService } from '@/lib/services/backup-task.service';
+import { backupTaskStreamingService } from '@/lib/services/backup-task-streaming.service';
 import { createSourceTargetPool } from '@/lib/db/connection';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -136,8 +137,8 @@ export default async function handler(
         createdBy: req.headers['x-user'] as string || undefined,
       });
 
-      // Step 4: Start backup in background
-      backupTaskService.executeBackupTask(task.id, sourceConnectionString).catch((error) => {
+      // Step 4: Start backup in background with streaming
+      backupTaskStreamingService.executeBackupTaskStreaming(task.id, sourceConnectionString).catch((error) => {
         console.error(`[backup/create-with-slot] Background task ${task.id} failed:`, error);
       });
 

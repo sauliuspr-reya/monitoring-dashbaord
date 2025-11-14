@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { ReplicationStatus } from '@/lib/types';
@@ -10,15 +10,7 @@ export default function GroupDetails() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (id) {
-      loadGroupDetails();
-      const interval = setInterval(loadGroupDetails, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [id]);
-
-  const loadGroupDetails = async () => {
+  const loadGroupDetails = useCallback(async () => {
     if (!id) return;
     
     try {
@@ -35,7 +27,15 @@ export default function GroupDetails() {
       setError(err.message);
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    if (id) {
+      loadGroupDetails();
+      const interval = setInterval(loadGroupDetails, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [id, loadGroupDetails]);
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
