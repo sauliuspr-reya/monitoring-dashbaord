@@ -16,7 +16,8 @@ async function getBackupDir(): Promise<string> {
     await fs.access('/backup');
     return '/backup';
   } catch {
-    return './backup';
+    // For local runs, use ./backup in the project directory
+    return path.join(process.cwd(), 'backup');
   }
 }
 

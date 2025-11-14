@@ -1,6 +1,7 @@
 import { getDbPool } from '@/lib/db/connection';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { existsSync } from 'fs';
 
 export interface TaskLogEntry {
   id: string;
@@ -13,8 +14,25 @@ export interface TaskLogEntry {
 
 export class TaskLoggerService {
   private readonly MAX_DB_LINES = 100; // Keep last 100 lines in DB
-  // Use /backup/logs to persist across pod restarts (same volume as backup files)
-  private readonly LOG_DIR = process.env.BACKUP_LOG_DIR || '/backup/logs';
+  
+  /**
+   * Get log directory - uses /backup/logs in production, ./backup/logs in project root for local
+   */
+  private getLogDirPath(): string {
+    if (process.env.BACKUP_LOG_DIR) {
+      return process.env.BACKUP_LOG_DIR;
+    }
+    
+    // Try /backup/logs first (production/Kubernetes)
+    if (existsSync('/backup')) {
+      return '/backup/logs';
+    }
+    
+    // For local runs, use ./backup/logs in the project directory
+    return path.join(process.cwd(), 'backup', 'logs');
+  }
+  
+  private readonly LOG_DIR = this.getLogDirPath();
 
   /**
    * Get log directory path, create if needed

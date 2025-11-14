@@ -140,6 +140,16 @@ export class BackupTaskStreamingService extends BackupTaskService {
       stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Command: pg_dump ${args.join(' ').replace(/PGPASSWORD=[^\s]+/g, 'PGPASSWORD=***')}`, stdoutLineCount).catch(() => {});
 
+      // Initialize variables for file size tracking and stall detection
+      // These need to be declared before the event handlers that use them
+      let lastFileSize = 0;
+      let lastFileSizeTime = Date.now();
+      let lastStderrActivityTime = Date.now();
+      let fileCreatedTime: number | null = null;
+      const FILE_CREATION_TIMEOUT = 5 * 60 * 1000; // 5 minutes to create file
+      const FILE_STALL_TIMEOUT = 15 * 60 * 1000; // 15 minutes without growth = stalled (for large tables)
+      const taskStartTime = startTime; // Capture start time for timeout checks
+
       // With shell redirection (> file), stdout goes to file, stderr goes to stderr pipe
       // pg_dump sends backup SQL to stdout (redirected to file) and verbose progress to stderr
       // So stdout pipe will be empty, but stderr will have all the verbose output
@@ -249,14 +259,6 @@ export class BackupTaskStreamingService extends BackupTaskService {
       });
 
       // Update file size periodically during execution and detect failures
-      let lastFileSize = 0;
-      let lastFileSizeTime = Date.now();
-      let lastStderrActivityTime = Date.now();
-      let fileCreatedTime: number | null = null;
-      const FILE_CREATION_TIMEOUT = 5 * 60 * 1000; // 5 minutes to create file
-      const FILE_STALL_TIMEOUT = 15 * 60 * 1000; // 15 minutes without growth = stalled (for large tables)
-      const taskStartTime = startTime; // Capture start time for timeout checks
-      
       const sizeCheckInterval = setInterval(async () => {
         try {
           const stats = await fs.stat(filepath);

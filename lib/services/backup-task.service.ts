@@ -548,7 +548,8 @@ export class BackupTaskService {
       await fs.access('/backup');
       return '/backup';
     } catch {
-      return './backup';
+      // For local runs, use ./backup in the project directory
+      return path.join(process.cwd(), 'backup');
     }
   }
 
