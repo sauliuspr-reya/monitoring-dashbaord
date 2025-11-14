@@ -27,6 +27,7 @@ interface BackupJobListProps {
   onCancel: (taskId: string) => void;
   onDelete: (taskId: string, hasFile: boolean) => void;
   onCreateSubscription: (taskId: string, subscriptionName: string) => void;
+  onReRun: (task: BackupTaskInfo) => void;
   formatBytes: (bytes: number) => string;
 }
 
@@ -35,6 +36,7 @@ export default function BackupJobList({
   onCancel,
   onDelete,
   onCreateSubscription,
+  onReRun,
   formatBytes,
 }: BackupJobListProps) {
   const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
@@ -300,6 +302,14 @@ export default function BackupJobList({
                         className="px-3 py-1.5 text-xs font-medium text-yellow-700 bg-yellow-50 border border-yellow-200 rounded hover:bg-yellow-100 transition-colors"
                       >
                         Cancel Job
+                      </button>
+                    )}
+                    {task.status === 'completed' && task.task_type === 'backup' && (
+                      <button
+                        onClick={() => onReRun(task)}
+                        className="px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+                      >
+                        ↻ Re-run
                       </button>
                     )}
                     {task.status === 'completed' && task.slot_name && (

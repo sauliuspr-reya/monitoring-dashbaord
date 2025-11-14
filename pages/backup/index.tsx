@@ -65,6 +65,13 @@ export default function BackupPage() {
   // Modal states
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [backupModalInitialState, setBackupModalInitialState] = useState<{
+    tables?: string[];
+    excludeTables?: string[];
+    schemaOnly?: boolean;
+    enableReplication?: boolean;
+    excludeMode?: boolean;
+  } | null>(null);
   
   // Tab state for jobs list
   const [jobsTab, setJobsTab] = useState<'all' | 'backup' | 'restore'>('all');
@@ -372,7 +379,10 @@ export default function BackupPage() {
               </div>
               <div className="flex gap-3">
                 <button
-                  onClick={() => setShowBackupModal(true)}
+                  onClick={() => {
+                    setBackupModalInitialState(null);
+                    setShowBackupModal(true);
+                  }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium"
                 >
                   + Create Backup
@@ -480,6 +490,16 @@ export default function BackupPage() {
                 onCancel={handleCancelTask}
                 onDelete={handleDeleteTask}
                 onCreateSubscription={handleCreateSubscriptionFromBackup}
+                onReRun={(task) => {
+                  setBackupModalInitialState({
+                    tables: task.tables,
+                    excludeTables: task.exclude_tables,
+                    schemaOnly: task.schema_only || false,
+                    enableReplication: !!task.slot_name,
+                    excludeMode: !!(task.exclude_tables && task.exclude_tables.length > 0),
+                  });
+                  setShowBackupModal(true);
+                }}
                 formatBytes={formatBytes}
               />
             )}
@@ -516,11 +536,19 @@ export default function BackupPage() {
       {/* Modals */}
       <BackupModal
         isOpen={showBackupModal}
-        onClose={() => setShowBackupModal(false)}
+        onClose={() => {
+          setShowBackupModal(false);
+          setBackupModalInitialState(null);
+        }}
         tables={tables}
         loading={loading}
         onBackup={handleBackup}
         backingUp={backingUp}
+        initialTables={backupModalInitialState?.tables}
+        initialExcludeTables={backupModalInitialState?.excludeTables}
+        initialSchemaOnly={backupModalInitialState?.schemaOnly}
+        initialEnableReplication={backupModalInitialState?.enableReplication}
+        initialExcludeMode={backupModalInitialState?.excludeMode}
       />
 
       <RestoreModal

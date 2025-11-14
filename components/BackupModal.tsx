@@ -31,6 +31,11 @@ interface BackupModalProps {
     enableReplication: boolean;
   }) => void;
   backingUp: boolean;
+  initialTables?: string[];
+  initialExcludeTables?: string[];
+  initialSchemaOnly?: boolean;
+  initialEnableReplication?: boolean;
+  initialExcludeMode?: boolean;
 }
 
 export default function BackupModal({
@@ -40,15 +45,22 @@ export default function BackupModal({
   loading,
   onBackup,
   backingUp,
+  initialTables,
+  initialExcludeTables,
+  initialSchemaOnly,
+  initialEnableReplication,
+  initialExcludeMode,
 }: BackupModalProps) {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
-  const [excludeMode, setExcludeMode] = useState(false);
+  const [excludeMode, setExcludeMode] = useState(initialExcludeMode || false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [schemaOnly, setSchemaOnly] = useState(false);
-  const [enableReplication, setEnableReplication] = useState(true);
+  const [schemaOnly, setSchemaOnly] = useState(initialSchemaOnly || false);
+  const [enableReplication, setEnableReplication] = useState(initialEnableReplication !== undefined ? initialEnableReplication : true);
   const [sortColumn, setSortColumn] = useState<SortColumn>('table');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [backupInfoMap, setBackupInfoMap] = useState<Map<string, { lastBackupDate?: string; lastBackupId?: string }>>(new Map());
+  const [showPasteList, setShowPasteList] = useState(false);
+  const [pasteListText, setPasteListText] = useState('');
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -75,6 +87,36 @@ export default function BackupModal({
     if (num < 1000000) return `${(num / 1000).toFixed(1)}k`;
     return `${(num / 1000000).toFixed(1)}M`;
   };
+
+  // Initialize from props when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      if (initialTables && initialTables.length > 0) {
+        setSelectedTables(new Set(initialTables));
+        setExcludeMode(false);
+      } else if (initialExcludeTables && initialExcludeTables.length > 0) {
+        setSelectedTables(new Set(initialExcludeTables));
+        setExcludeMode(true);
+      } else {
+        setSelectedTables(new Set());
+      }
+      
+      if (initialSchemaOnly !== undefined) {
+        setSchemaOnly(initialSchemaOnly);
+      }
+      if (initialEnableReplication !== undefined) {
+        setEnableReplication(initialEnableReplication);
+      }
+      if (initialExcludeMode !== undefined) {
+        setExcludeMode(initialExcludeMode);
+      }
+      
+      // Reset other state
+      setSearchQuery('');
+      setPasteListText('');
+      setShowPasteList(false);
+    }
+  }, [isOpen, initialTables, initialExcludeTables, initialSchemaOnly, initialEnableReplication, initialExcludeMode]);
 
   const formatDate = (dateString?: string) => {
     if (!dateString) return '—';
@@ -213,6 +255,71 @@ export default function BackupModal({
     setSelectedTables(new Set());
   };
 
+  // Parse table list from text (handles newlines, spaces, commas)
+  const parseTableList = (text: string): string[] => {
+    if (!text.trim()) return [];
+    
+    // Split by newlines, commas, or spaces, then clean up
+    const parts = text
+      .split(/[\n,\s]+/)
+      .map(part => part.trim())
+      .filter(part => part.length > 0);
+    
+    return parts;
+  };
+
+  // Normalize table name for matching (remove quotes, schema prefix, lowercase)
+  const normalizeTableName = (name: string): string => {
+    return name
+      .replace(/^public\./i, '')
+      .replace(/^["']|["']$/g, '')
+      .toLowerCase()
+      .trim();
+  };
+
+  // Load tables from pasted text
+  const loadTablesFromPaste = () => {
+    const parsedNames = parseTableList(pasteListText);
+    if (parsedNames.length === 0) {
+      alert('No table names found in the pasted text');
+      return;
+    }
+
+    const matchedTables = new Set<string>();
+    const notFound: string[] = [];
+
+    parsedNames.forEach(parsedName => {
+      const normalizedParsed = normalizeTableName(parsedName);
+      
+      // Try to find matching table
+      const found = tables.find(table => {
+        const normalizedTable = normalizeTableName(table.table);
+        const normalizedTableName = normalizeTableName(table.tableName);
+        return normalizedTable === normalizedParsed || normalizedTableName === normalizedParsed;
+      });
+
+      if (found) {
+        matchedTables.add(found.table);
+      } else {
+        notFound.push(parsedName);
+      }
+    });
+
+    if (matchedTables.size > 0) {
+      setSelectedTables(matchedTables);
+      setPasteListText('');
+      setShowPasteList(false);
+      
+      if (notFound.length > 0) {
+        alert(`Loaded ${matchedTables.size} table(s). ${notFound.length} table(s) not found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+      } else {
+        alert(`Successfully loaded ${matchedTables.size} table(s)`);
+      }
+    } else {
+      alert(`No matching tables found. Please check the table names.\n\nNot found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+    }
+  };
+
   const handleSubmit = () => {
     if (!excludeMode && selectedTables.size === 0) {
       alert('Please select at least one table to include');
@@ -234,8 +341,8 @@ export default function BackupModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-7xl h-full max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-2">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-[95vw] h-full max-h-[95vh] flex flex-col">
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between bg-gray-50">
           <div>
@@ -320,15 +427,58 @@ export default function BackupModal({
             )}
           </div>
 
-          {/* Search */}
-          <div className="mb-4">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search tables..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          {/* Search and Paste List */}
+          <div className="mb-4 space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search tables..."
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={() => setShowPasteList(!showPasteList)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+              >
+                {showPasteList ? '✕ Hide' : '📋 Paste List'}
+              </button>
+            </div>
+            
+            {showPasteList && (
+              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Paste table names (one per line, or comma/space separated):
+                </label>
+                <textarea
+                  value={pasteListText}
+                  onChange={(e) => setPasteListText(e.target.value)}
+                  placeholder={`AccountBalanceSeries\nAccountCollateralBalanceSeries\nAccountTotalBalanceSeries\n...`}
+                  rows={6}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={loadTablesFromPaste}
+                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+                  >
+                    Load Tables
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPasteListText('');
+                      setShowPasteList(false);
+                    }}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-gray-500">
+                  Supports newline, comma, or space-separated table names. Will match against available tables.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Table Selection Controls */}
@@ -397,7 +547,6 @@ export default function BackupModal({
                     >
                       Writers <SortIcon column="writers" />
                     </th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase">Change Rate</th>
                     <th 
                       className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('lastBackup')}
@@ -410,13 +559,13 @@ export default function BackupModal({
                 <tbody className="bg-white divide-y divide-gray-200">
                   {loading ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                         Loading tables...
                       </td>
                     </tr>
                   ) : sortedTables.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                         No tables found
                       </td>
                     </tr>
@@ -480,15 +629,6 @@ export default function BackupModal({
                               <span className="text-xs text-gray-400">No writers</span>
                             )}
                           </div>
-                        </td>
-                        <td className="px-4 py-2 text-right text-sm text-gray-600">
-                          {table.loading ? (
-                            <span className="text-gray-400">...</span>
-                          ) : (
-                            <span className="font-mono text-xs">
-                              {formatRateOfChange(table.rateOfChange1Hour)}
-                            </span>
-                          )}
                         </td>
                         <td className="px-4 py-2 text-sm text-gray-600">
                           {table.lastBackupDate ? (
