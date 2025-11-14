@@ -253,6 +253,44 @@ export default function BackupJobList({
                         )}
                       </div>
 
+                      {/* File and Log Paths */}
+                      <div className="bg-gray-50 border border-gray-200 rounded p-3">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-2">File & Log Paths</h4>
+                        <div className="space-y-1 text-xs">
+                          {task.filepath ? (
+                            <div>
+                              <span className="font-medium text-gray-700">Backup File:</span>
+                              <div className="mt-1 font-mono text-gray-600 break-all bg-white p-1 rounded border">
+                                {task.filepath}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-gray-500 italic">File path will be set when backup starts...</div>
+                          )}
+                          <div className="mt-2">
+                            <span className="font-medium text-gray-700">Log Files:</span>
+                            <div className="mt-1 space-y-1">
+                              <div className="font-mono text-gray-600 text-xs break-all bg-white p-1 rounded border">
+                                /tmp/backup-logs/{task.id}.stdout.log
+                              </div>
+                              <div className="font-mono text-gray-600 text-xs break-all bg-white p-1 rounded border">
+                                /tmp/backup-logs/{task.id}.stderr.log
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Error Message */}
+                      {task.error_message && (
+                        <div className="bg-red-50 border border-red-200 rounded p-3">
+                          <h4 className="text-sm font-semibold text-red-900 mb-2">Error</h4>
+                          <div className="text-xs text-red-800 font-mono break-all">
+                            {task.error_message}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Replication Info */}
                       {isSnapshot && (
                         <div className="bg-blue-50 border border-blue-200 rounded p-3">

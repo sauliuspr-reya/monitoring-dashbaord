@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getDbPool, createSourceTargetPool } from '@/lib/db/connection';
 import { GoldskyAnalysisService } from '@/lib/services/goldsky-analysis.service';
 import { ApplicationTrackingService } from '@/lib/services/application-tracking.service';
-import { RateOfChangeService } from '@/lib/services/rate-of-change.service';
+// RateOfChangeService removed - we track metrics directly in table_replication_metrics
 
 interface DatabaseLocation {
   type: 'source' | 'target';
@@ -82,9 +82,9 @@ function detectDatabaseLocation(connectionString: string, type: 'source' | 'targ
   }
 }
 
-// Cache for table stats (10 minute TTL)
+// Cache for table stats (1 minute TTL - fast with reltuples!)
 const tableStatsCache = new Map<string, { data: any; timestamp: number }>();
-const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL = 1 * 60 * 1000; // 1 minute
 
 export default async function handler(
   req: NextApiRequest,
@@ -139,20 +139,6 @@ export default async function handler(
       }
     }
 
-    // Initialize rate of change service and fetch all latest rates
-    // Gracefully handle if table doesn't exist yet
-    let rateOfChangeMap = new Map();
-    try {
-      const rateOfChangeService = new RateOfChangeService();
-      rateOfChangeMap = await rateOfChangeService.getAllLatestRates();
-      console.log(`[tables/all] Loaded ${rateOfChangeMap.size} rate of change entries`);
-    } catch (error: any) {
-      if (error.code === '42P01') {
-        console.log('[tables/all] Rate of change table not yet created (run migration 002)');
-      } else {
-        console.log('[tables/all] Could not load rate of change data:', error.message);
-      }
-    }
 
     // Get connection strings - try from subscriptions first, then from env/config
     let sourceConnection: string | null = null;
@@ -233,6 +219,81 @@ export default async function handler(
     const targetPool = targetConnection ? createSourceTargetPool(targetConnection) : null;
     const monitoringPool = getDbPool();
     
+    // Get latest metrics for rate of change calculation (from table_replication_metrics)
+    // This replaces the separate rate of change service - we track metrics directly
+    const latestMetricsMap = new Map<string, { sourceRowCount: number; targetRowCount: number; timestamp: Date }>();
+    try {
+      if (subscriptions.length > 0) {
+        const metricsIdColumnCheck = await monitoringPool.query(`
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = 'table_replication_metrics' 
+            AND column_name IN ('subscription_id', 'group_id')
+          LIMIT 1
+        `).catch(() => ({ rows: [] }));
+        
+        const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
+        const subscriptionIdForMetrics = subscriptions[0].id;
+        
+        // Get latest metrics for each table (most recent per table)
+        const latestMetricsResult = await monitoringPool.query(`
+          SELECT DISTINCT ON (table_name)
+            table_name,
+            source_row_count,
+            target_row_count,
+            timestamp
+          FROM table_replication_metrics
+          WHERE ${metricsIdColumn} = $1
+          ORDER BY table_name, timestamp DESC
+        `, [subscriptionIdForMetrics]).catch(() => ({ rows: [] }));
+        
+        for (const row of latestMetricsResult.rows) {
+          latestMetricsMap.set(row.table_name.toLowerCase(), {
+            sourceRowCount: parseInt(row.source_row_count || '0', 10),
+            targetRowCount: parseInt(row.target_row_count || '0', 10),
+            timestamp: new Date(row.timestamp),
+          });
+        }
+      }
+    } catch (error: any) {
+      // Ignore errors - metrics are optional
+      if (debugMode) {
+        console.log('[tables/all] Could not load latest metrics:', error.message);
+      }
+    }
+    
+    // Cache subscription statuses (fetch once for all tables instead of per-table queries)
+    const subscriptionStatusCache = new Map<string, 'active' | 'stopped' | 'error'>();
+    if (targetPool && subscriptions.length > 0) {
+      try {
+        const allSubNames = subscriptions.map((s: any) => s.name);
+        const allSubStatusResult = await targetPool.query(`
+          SELECT 
+            s.subname,
+            s.subenabled as enabled,
+            ss.pid as worker_pid
+          FROM pg_subscription s
+          LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
+          WHERE s.subname = ANY($1)
+        `, [allSubNames]);
+        
+        for (const row of allSubStatusResult.rows) {
+          if (row.enabled && row.worker_pid !== null) {
+            subscriptionStatusCache.set(row.subname, 'active');
+          } else if (row.enabled && row.worker_pid === null) {
+            subscriptionStatusCache.set(row.subname, 'error');
+          } else {
+            subscriptionStatusCache.set(row.subname, 'stopped');
+          }
+        }
+      } catch (err) {
+        // If we can't check status, mark all as active (default)
+        for (const sub of subscriptions) {
+          subscriptionStatusCache.set(sub.name, 'active');
+        }
+      }
+    }
+    
     // Detect database locations (handle null connections)
     const sourceLocation = sourceConnection ? detectDatabaseLocation(sourceConnection, 'source') : null;
     const targetLocation = targetConnection ? detectDatabaseLocation(targetConnection, 'target') : null;
@@ -266,11 +327,14 @@ export default async function handler(
       `);
       
       backupInfoResult.rows.forEach((row: any) => {
+        // Normalize table name: remove public. prefix, remove quotes, convert to lowercase
         const normalizedTable = row.table_name
           .replace(/^public\./, '')
           .replace(/^"/, '')
-          .replace(/"$/, '');
+          .replace(/"$/, '')
+          .toLowerCase();
         
+        // Store with normalized key for consistent lookup
         tableBackupInfo.set(normalizedTable, {
           lastBackupDate: row.backup_date ? new Date(row.backup_date).toISOString() : undefined,
           lastBackupId: row.backup_id,
@@ -655,16 +719,13 @@ export default async function handler(
         }
       }
 
-      // Get stats for all tables - process in batches to avoid connection pool exhaustion
-      // Process 10 tables at a time to prevent timeouts
-      const BATCH_SIZE = 10;
+      // Get stats for all tables - process all at once since reltuples is super fast!
+      // Only batch the COUNT(*) queries for subscribed tables (those are slower)
       const tableStats: TableInfo[] = [];
       
-      for (let i = 0; i < tablesToProcess.length; i += BATCH_SIZE) {
-        const batch = tablesToProcess.slice(i, i + BATCH_SIZE);
-        
-        const batchResults = await Promise.all(
-          batch.map(async (row: any) => {
+      // Process all tables in parallel (reltuples is fast, no need to batch)
+      const allTableResults = await Promise.all(
+        tablesToProcess.map(async (row: any) => {
           const tableName = row.table_name;
           const [schema, table] = tableName.split('.');
 
@@ -746,35 +807,16 @@ export default async function handler(
             const tableSubs = tableSubscriptions.get(tableName) || []; // This table's subscriptions (which subscriptions include this table)
             
             // Check actual replication status for subscriptions that include this table
+            // Use cached subscription status map (fetched once for all tables)
             let replicationStatus: 'active' | 'stopped' | 'error' | 'none' = 'none';
-            if (tableSubs.length > 0 && targetPool) {
-              // Check if any subscription is actually active and replicating
-              try {
-                const subStatusResult = await targetPool.query(`
-                  SELECT 
-                    s.subname,
-                    s.subenabled as enabled,
-                    ss.pid as worker_pid,
-                    ss.latest_end_time
-                  FROM pg_subscription s
-                  LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
-                  WHERE s.subname = ANY($1)
-                  LIMIT 1
-                `, [tableSubs]);
-                
-                if (subStatusResult.rows.length > 0) {
-                  const sub = subStatusResult.rows[0];
-                  if (sub.enabled && sub.worker_pid !== null) {
-                    replicationStatus = 'active';
-                  } else if (sub.enabled && sub.worker_pid === null) {
-                    replicationStatus = 'error';
-                  } else {
-                    replicationStatus = 'stopped';
-                  }
+            if (tableSubs.length > 0) {
+              // Find first matching subscription status from cache
+              for (const subName of tableSubs) {
+                const cachedStatus = subscriptionStatusCache.get(subName);
+                if (cachedStatus) {
+                  replicationStatus = cachedStatus;
+                  break;
                 }
-              } catch (err) {
-                // If we can't check status, assume it's configured but status unknown
-                replicationStatus = 'active'; // Default to active if we can't check
               }
             }
             
@@ -815,52 +857,42 @@ export default async function handler(
                   (tableSubscriptions.get(tableName) || []).includes(sub.name)
                 );
 
-                // Get rate of change from the new service
+                // Calculate rate of change from stored metrics
                 let rateOfChange1Hour: number | null = null;
                 let rateOfChange24Hour: number | null = null;
                 
-                const rateKey = `public.${table}`;
-                const rateData = rateOfChangeMap.get(rateKey);
+                // Get historical data from table_replication_metrics
+                const normalizedTable = table.toLowerCase();
+                const data1Hour = historical1Hour.get(normalizedTable);
+                const data24Hour = historical24Hour.get(normalizedTable);
                 
-                if (rateData) {
-                  // Use the pre-calculated rates from the service
-                  rateOfChange1Hour = rateData.rateOfChange1Hour;
-                  rateOfChange24Hour = rateData.rateOfChange24Hour;
-                } else {
-                  // Fallback to old calculation if no data in new system yet
-                  const normalizedTable = table.toLowerCase();
-                  const data1Hour = historical1Hour.get(normalizedTable);
-                  const data24Hour = historical24Hour.get(normalizedTable);
+                // Calculate 1-hour rate
+                if (data1Hour && data1Hour.sourceRowCount > 0 && sourceCount > 0) {
+                  const now = new Date();
+                  const timeDiffMs = now.getTime() - data1Hour.timestamp.getTime();
+                  const timeDiffMinutes = timeDiffMs / (1000 * 60);
                   
-                  // Calculate 1-hour rate
-                  if (data1Hour && data1Hour.sourceRowCount > 0 && sourceCount > 0) {
-                    const now = new Date();
-                    const timeDiffMs = now.getTime() - data1Hour.timestamp.getTime();
-                    const timeDiffMinutes = timeDiffMs / (1000 * 60);
-                    
-                    if (timeDiffMinutes > 0) {
-                      const rowChange = sourceCount - data1Hour.sourceRowCount;
-                      rateOfChange1Hour = rowChange / timeDiffMinutes;
-                    }
+                  if (timeDiffMinutes > 0 && timeDiffMinutes <= 120) { // Only if within reasonable range (0-2 hours)
+                    const rowChange = sourceCount - data1Hour.sourceRowCount;
+                    rateOfChange1Hour = rowChange / timeDiffMinutes;
                   }
+                }
+                
+                // Calculate 24-hour rate
+                if (data24Hour && data24Hour.sourceRowCount > 0 && sourceCount > 0) {
+                  const now = new Date();
+                  const timeDiffMs = now.getTime() - data24Hour.timestamp.getTime();
+                  const timeDiffMinutes = timeDiffMs / (1000 * 60);
                   
-                  // Calculate 24-hour rate
-                  if (data24Hour && data24Hour.sourceRowCount > 0 && sourceCount > 0) {
-                    const now = new Date();
-                    const timeDiffMs = now.getTime() - data24Hour.timestamp.getTime();
-                    const timeDiffMinutes = timeDiffMs / (1000 * 60);
-                    
-                    if (timeDiffMinutes > 0) {
-                      const rowChange = sourceCount - data24Hour.sourceRowCount;
-                      rateOfChange24Hour = rowChange / timeDiffMinutes;
-                    }
+                  if (timeDiffMinutes > 0 && timeDiffMinutes <= 1500) { // Only if within reasonable range (0-25 hours)
+                    const rowChange = sourceCount - data24Hour.sourceRowCount;
+                    rateOfChange24Hour = rowChange / timeDiffMinutes;
                   }
                 }
 
-                // Store current metrics for future rate calculations
-                // Use the first subscription's ID to store metrics for ALL tables (even if not in subscription)
-                // This allows us to track metrics globally while respecting the NOT NULL constraint
-                // Only attempt to store metrics if we have subscriptions (checked once outside the loop)
+                // Store current metrics for rate of change tracking
+                // Smart storage: only store if row count changed OR if it's been >1 minute since last storage
+                // This prevents storing duplicate data while ensuring we have regular snapshots
                 if (subscriptions.length > 0) {
                   try {
                     const metricsIdColumnCheck = await monitoringPool.query(`
@@ -872,35 +904,48 @@ export default async function handler(
                     `).catch(() => ({ rows: [] }));
                     
                     const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
-                    
-                    // Use the first subscription's ID for metrics tracking
                     const subscriptionIdForMetrics = subscriptions[0].id;
-                  const tableNameForStorage = table; // Store just the table name, not schema.table
-                  await monitoringPool.query(`
-                    INSERT INTO table_replication_metrics (
-                      ${metricsIdColumn}, table_name, timestamp, source_row_count, target_row_count, gap_size, status
-                    ) VALUES ($1, $2, date_trunc('minute', NOW()), $3, $4, $5, $6)
-                    ON CONFLICT (${metricsIdColumn}, table_name, timestamp) DO UPDATE SET
-                      source_row_count = EXCLUDED.source_row_count,
-                      target_row_count = EXCLUDED.target_row_count,
-                      gap_size = EXCLUDED.gap_size,
-                      status = EXCLUDED.status
-                  `, [
-                    subscriptionIdForMetrics,
-                    tableNameForStorage,
-                    sourceCount,
-                    targetCount,
-                    sourceCount - targetCount,
-                    sourceCount === targetCount ? 'synced' : sourceCount > targetCount ? 'lagging' : 'error',
-                  ]).catch((err) => {
-                    // Log but ignore - rate tracking is optional (only log first few errors to avoid spam)
-                    if (i < 3) {
-                      console.warn(`[tables/all] Failed to store metrics for ${table}:`, err.message);
+                    const tableNameForStorage = table; // Store just the table name, not schema.table
+                    const now = new Date();
+                    const truncatedTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
+                    
+                    // Check if we should store (only if changed or new minute)
+                    const lastMetric = latestMetricsMap.get(normalizedTable);
+                    const shouldStore = !lastMetric || 
+                      lastMetric.sourceRowCount !== sourceCount || 
+                      lastMetric.targetRowCount !== targetCount ||
+                      (now.getTime() - lastMetric.timestamp.getTime()) >= 60000; // At least 1 minute passed
+                    
+                    // Store metrics asynchronously (don't wait) to avoid blocking
+                    if (shouldStore) {
+                      // Fire and forget - don't await to avoid blocking
+                      monitoringPool.query(`
+                        INSERT INTO table_replication_metrics (
+                          ${metricsIdColumn}, table_name, timestamp, source_row_count, target_row_count, gap_size, status
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (${metricsIdColumn}, table_name, timestamp) DO UPDATE SET
+                          source_row_count = EXCLUDED.source_row_count,
+                          target_row_count = EXCLUDED.target_row_count,
+                          gap_size = EXCLUDED.gap_size,
+                          status = EXCLUDED.status
+                      `, [
+                        subscriptionIdForMetrics,
+                        tableNameForStorage,
+                        truncatedTimestamp,
+                        sourceCount,
+                        targetCount,
+                        sourceCount - targetCount,
+                        sourceCount === targetCount ? 'synced' : sourceCount > targetCount ? 'lagging' : 'error',
+                      ]).catch((err) => {
+                        // Log but ignore - metrics tracking is optional
+                        if (debugMode) {
+                          console.warn(`[tables/all] Failed to store metrics for ${table}:`, err.message);
+                        }
+                      });
                     }
-                  });
                   } catch (err) {
-                    // Ignore - rate tracking is optional (only log first few errors to avoid spam)
-                    if (i < 3) {
+                    // Ignore - metrics tracking is optional
+                    if (debugMode) {
                       console.warn(`[tables/all] Error storing metrics for ${table}:`, err);
                     }
                   }
@@ -908,7 +953,13 @@ export default async function handler(
                 // Note: If no subscriptions exist, metrics tracking is skipped (this is fine - it's optional)
 
                 // Get backup info for this table
-                const backupInfo = tableBackupInfo.get(table.toLowerCase());
+                // Normalize table name the same way as when storing (remove public. prefix and quotes)
+                const normalizedTableForBackup = tableName
+                  .replace(/^public\./, '')
+                  .replace(/^"/, '')
+                  .replace(/"$/, '')
+                  .toLowerCase();
+                const backupInfo = tableBackupInfo.get(normalizedTableForBackup);
                 
                 return {
                   tableName,
@@ -960,15 +1011,10 @@ export default async function handler(
             };
           }
           })
-        );
-        
-        tableStats.push(...batchResults);
-        
-        // Small delay between batches to avoid overwhelming the database
-        if (i + BATCH_SIZE < tablesToProcess.length) {
-          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
-        }
-      }
+      );
+      
+      // Filter out errors and add to results
+      tableStats.push(...allTableResults.filter((result: any) => result && !result.error));
       
 
       // Merge quick list with detailed stats

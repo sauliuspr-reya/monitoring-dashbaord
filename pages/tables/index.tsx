@@ -61,7 +61,7 @@ export default function TablesPage() {
 
   useEffect(() => {
     loadTables();
-    const interval = setInterval(loadTables, 300000); // Refresh every 5 minutes
+    const interval = setInterval(loadTables, 60000); // Refresh every 1 minute (fast with reltuples!)
     return () => clearInterval(interval);
   }, []);
 

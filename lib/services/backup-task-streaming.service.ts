@@ -24,7 +24,14 @@ export class BackupTaskStreamingService extends BackupTaskService {
       throw new Error(`Task ${taskId} is not in pending status`);
     }
 
-    await this.updateTask(taskId, { status: 'running' });
+    const startTime = Date.now();
+    await this.updateTask(taskId, { 
+      status: 'running',
+      metadata: {
+        ...task.metadata,
+        startTime: startTime,
+      },
+    });
 
     // Initialize logging
     const { stdoutPath, stderrPath } = await taskLoggerService.initializeTaskLogging(taskId);
@@ -107,13 +114,21 @@ export class BackupTaskStreamingService extends BackupTaskService {
         },
       });
 
-      // Log initial command info
+      // Log initial command info with paths
       stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Starting backup: ${filename}`, stdoutLineCount).catch(err => {
         console.error(`[backup-streaming] Error logging initial message:`, err);
       });
       stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Backup directory: ${backupDir}`, stdoutLineCount).catch(() => {});
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Full file path: ${filepath}`, stdoutLineCount).catch(() => {});
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Log files: ${stdoutPath}, ${stderrPath}`, stdoutLineCount).catch(() => {});
+      stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Tables: ${task.tables?.length || 0}, Excluded: ${task.exclude_tables?.length || 0}`, stdoutLineCount).catch(() => {});
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Command: pg_dump ${args.join(' ').replace(/PGPASSWORD=[^\s]+/g, 'PGPASSWORD=***')}`, stdoutLineCount).catch(() => {});
 
       // Handle stdout
       childProcess.stdout?.on('data', async (data: Buffer) => {
@@ -127,7 +142,7 @@ export class BackupTaskStreamingService extends BackupTaskService {
         }
       });
 
-      // Handle stderr
+      // Handle stderr - log all errors immediately
       childProcess.stderr?.on('data', async (data: Buffer) => {
         const text = data.toString('utf-8');
         const lines = text.split('\n').filter(l => l.trim().length > 0);
@@ -136,6 +151,12 @@ export class BackupTaskStreamingService extends BackupTaskService {
           await taskLoggerService.appendLog(taskId, 'stderr', line.trim(), stderrLineCount).catch(err => {
             console.error(`[backup-streaming] Error appending stderr log line:`, err);
           });
+          
+          // If we see certain error patterns, mark as failed immediately
+          const errorLine = line.trim().toLowerCase();
+          if (errorLine.includes('fatal') || errorLine.includes('error') || errorLine.includes('connection') || errorLine.includes('timeout')) {
+            console.error(`[backup-streaming] Detected error in stderr: ${line.trim()}`);
+          }
         }
       });
 
@@ -198,24 +219,77 @@ export class BackupTaskStreamingService extends BackupTaskService {
         });
       });
 
-      // Update file size periodically during execution
+      // Update file size periodically during execution and detect failures
+      let lastFileSize = 0;
+      let lastFileSizeTime = Date.now();
+      let fileCreatedTime: number | null = null;
+      const FILE_CREATION_TIMEOUT = 5 * 60 * 1000; // 5 minutes to create file
+      const FILE_STALL_TIMEOUT = 2 * 60 * 1000; // 2 minutes without growth = stalled
+      const taskStartTime = startTime; // Capture start time for timeout checks
+      
       const sizeCheckInterval = setInterval(async () => {
         try {
           const stats = await fs.stat(filepath);
+          const currentSize = stats.size;
+          const now = Date.now();
+          
+          if (!fileCreatedTime && currentSize > 0) {
+            fileCreatedTime = now;
+            stdoutLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stdout', `✓ Backup file created and growing: ${filepath} (${(currentSize / 1024).toFixed(2)} KB)`, stdoutLineCount).catch(() => {});
+          }
+          
+          // Check if file is growing
+          if (currentSize > lastFileSize) {
+            lastFileSize = currentSize;
+            lastFileSizeTime = now;
+          } else if (currentSize > 0 && (now - lastFileSizeTime) > FILE_STALL_TIMEOUT) {
+            // File exists but hasn't grown in 2 minutes
+            const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes`;
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+            await this.updateTask(taskId, {
+              status: 'stalled',
+              error_message: errorMsg,
+            });
+          }
+          
           await this.updateTask(taskId, {
-            file_size: stats.size,
+            file_size: currentSize,
             metadata: {
               ...task.metadata,
               lastFileSizeUpdate: new Date().toISOString(),
             },
           });
-        } catch (error) {
-          // File might not exist yet
+        } catch (error: any) {
+          // File doesn't exist yet - check if we've waited too long
+          const now = Date.now();
+          const timeSinceStart = now - taskStartTime;
+          
+          if (timeSinceStart > FILE_CREATION_TIMEOUT) {
+            const errorMsg = `Backup file not created after ${Math.round(timeSinceStart / 1000 / 60)} minutes. Expected at: ${filepath}`;
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+            await taskLoggerService.appendLog(taskId, 'stderr', `Check if pg_dump process is running (PID: ${childProcess.pid})`, stderrLineCount + 1).catch(() => {});
+            await taskLoggerService.appendLog(taskId, 'stderr', `Check logs at: ${stdoutPath} and ${stderrPath}`, stderrLineCount + 2).catch(() => {});
+            
+            // Check if process is still running
+            try {
+              process.kill(childProcess.pid || 0, 0); // Signal 0 just checks if process exists
+            } catch {
+              // Process doesn't exist - it crashed
+              await this.updateTask(taskId, {
+                status: 'failed',
+                error_message: 'pg_dump process exited unexpectedly (file was never created)',
+              });
+            }
+          }
         }
       }, 2000); // Check every 2 seconds
 
       // Clear interval when done
       childProcess.on('close', () => clearInterval(sizeCheckInterval));
+      childProcess.on('error', () => clearInterval(sizeCheckInterval));
 
     } catch (error: any) {
       this.activeProcesses.delete(taskId);

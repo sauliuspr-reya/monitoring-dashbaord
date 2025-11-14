@@ -22,6 +22,7 @@ export default function SubscriptionsPage() {
 
   const loadData = async () => {
     try {
+      setLoading(true);
       const groupsRes = await fetch('/api/groups');
       if (!groupsRes.ok) {
         throw new Error(`Failed to load subscriptions: ${groupsRes.statusText}`);
@@ -34,18 +35,51 @@ export default function SubscriptionsPage() {
         return;
       }
 
+      // Fetch status for all subscriptions in parallel
       const statusPromises = groupsData.map((group: any) =>
         fetch(`/api/groups/${group.id}/status`)
           .then((res) => {
             if (!res.ok) {
-              console.warn(`Failed to load status for group ${group.id}: ${res.statusText}`);
-              return null;
+              console.warn(`Failed to load status for subscription ${group.id}: ${res.statusText}`);
+              // Return a minimal status object if the status endpoint fails
+              return {
+                subscriptionId: group.id,
+                subscriptionName: group.name,
+                groupId: group.id,
+                groupName: group.name,
+                enabled: group.enabled,
+                status: 'error',
+                subscriptionEnabled: false,
+                workerRunning: false,
+                lagBytes: 0,
+                lagSeconds: 0,
+                slotLagBytes: 0,
+                tableCount: 0,
+                tablesWithIssues: 0,
+                conflicts: 0,
+              } as ReplicationStatus;
             }
             return res.json();
           })
           .catch((error) => {
-            console.warn(`Error loading status for group ${group.id}:`, error);
-            return null;
+            console.error(`Error loading status for subscription ${group.id}:`, error);
+            // Return a minimal status object on error
+            return {
+              subscriptionId: group.id,
+              subscriptionName: group.name,
+              groupId: group.id,
+              groupName: group.name,
+              enabled: group.enabled,
+              status: 'error',
+              subscriptionEnabled: false,
+              workerRunning: false,
+              lagBytes: 0,
+              lagSeconds: 0,
+              slotLagBytes: 0,
+              tableCount: 0,
+              tablesWithIssues: 0,
+              conflicts: 0,
+            } as ReplicationStatus;
           })
       );
       const statuses = await Promise.all(statusPromises);
@@ -442,25 +476,36 @@ export default function SubscriptionsPage() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
+                    <div className="bg-gray-50 p-3 rounded">
+                      <div className="text-xs text-gray-500 mb-1">Status</div>
+                      <div className="text-lg font-semibold">
+                        <span className={`px-2 py-1 rounded text-xs ${getStatusColor(group.status || 'stopped')}`}>
+                          {(group.status || 'stopped').toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
                     <div className="bg-gray-50 p-3 rounded">
                       <div className="text-xs text-gray-500 mb-1">Replication Lag</div>
-                      <div className="text-lg font-semibold">{formatBytes(group.lagBytes)}</div>
+                      <div className="text-lg font-semibold">{formatBytes(group.lagBytes || 0)}</div>
+                      {group.lagSeconds !== undefined && group.lagSeconds > 0 && (
+                        <div className="text-xs text-gray-400 mt-1">{group.lagSeconds}s</div>
+                      )}
                     </div>
                     <div className="bg-gray-50 p-3 rounded">
                       <div className="text-xs text-gray-500 mb-1">Tables</div>
-                      <div className="text-lg font-semibold">{group.tableCount}</div>
+                      <div className="text-lg font-semibold">{group.tableCount || 0}</div>
                     </div>
                     <div className="bg-gray-50 p-3 rounded">
                       <div className="text-xs text-gray-500 mb-1">Conflicts</div>
-                      <div className={`text-lg font-semibold ${group.conflicts > 0 ? 'text-red-600' : ''}`}>
-                        {group.conflicts}
+                      <div className={`text-lg font-semibold ${(group.conflicts || 0) > 0 ? 'text-red-600' : ''}`}>
+                        {group.conflicts || 0}
                       </div>
                     </div>
                     <div className="bg-gray-50 p-3 rounded">
                       <div className="text-xs text-gray-500 mb-1">Issues</div>
-                      <div className={`text-lg font-semibold ${group.tablesWithIssues > 0 ? 'text-yellow-600' : ''}`}>
-                        {group.tablesWithIssues}
+                      <div className={`text-lg font-semibold ${(group.tablesWithIssues || 0) > 0 ? 'text-yellow-600' : ''}`}>
+                        {group.tablesWithIssues || 0}
                       </div>
                     </div>
                   </div>
