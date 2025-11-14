@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { createSourceTargetPool } from '@/lib/db/connection';
+import { createSourceTargetPool, getDbPool } from '@/lib/db/connection';
 
 export default async function handler(
   req: NextApiRequest,
@@ -45,6 +45,9 @@ export default async function handler(
         return res.status(200).json({ publications: [] });
       }
 
+      // Get monitoring database pool to check for backup tasks
+      const monitoringPool = getDbPool();
+
       // Get tables for each publication
       const publications = await Promise.all(
         publicationsResult.rows.map(async (pub) => {
@@ -70,6 +73,27 @@ export default async function handler(
             tables = tablesResult.rows.map((r: any) => r.table_name);
           }
 
+          // Find backup task that created this publication
+          let taskId: string | null = null;
+          let createdAt: string | null = null;
+          try {
+            const taskResult = await monitoringPool.query(`
+              SELECT id, created_at
+              FROM backup_tasks
+              WHERE publication_name = $1
+              ORDER BY created_at DESC
+              LIMIT 1
+            `, [pub.name]);
+            
+            if (taskResult.rows.length > 0) {
+              taskId = taskResult.rows[0].id;
+              createdAt = taskResult.rows[0].created_at;
+            }
+          } catch (err) {
+            // Ignore errors - monitoring DB might not be available
+            console.warn('[publications/list] Could not query backup_tasks:', err);
+          }
+
           return {
             name: pub.name,
             allTables: pub.all_tables,
@@ -79,6 +103,8 @@ export default async function handler(
             truncateEnabled: pub.truncate_enabled,
             tables,
             tableCount: tables.length,
+            taskId,
+            createdAt,
           };
         })
       );

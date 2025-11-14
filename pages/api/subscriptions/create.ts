@@ -16,10 +16,11 @@ export default async function handler(
       description,
       sourceDbConnection,
       targetDbConnection,
-      customTables, // Tables to replicate
+      customTables, // Tables to replicate (when using existing publications, this is the selected subset)
       dataCopy = false, // Whether to copy existing data
       useExistingPublication = false, // Whether to use an existing publication
-      existingPublicationName, // Name of existing publication to use
+      existingPublicationName, // Name of existing publication to use (deprecated, use existingPublicationNames)
+      existingPublicationNames, // Array of publication names to use (supports multiple)
     } = req.body;
 
     // Fall back to environment variables if connection strings are not provided or empty
@@ -75,17 +76,23 @@ export default async function handler(
       return res.status(400).json({ error: 'No tables selected for subscription' });
     }
 
-    if (useExistingPublication && !existingPublicationName) {
-      return res.status(400).json({ error: 'existingPublicationName is required when useExistingPublication is true' });
+    // Support both old single publication and new multiple publications
+    const publicationNames = useExistingPublication 
+      ? (existingPublicationNames || (existingPublicationName ? [existingPublicationName] : []))
+      : [];
+    
+    if (useExistingPublication && publicationNames.length === 0) {
+      return res.status(400).json({ error: 'At least one publication must be selected when useExistingPublication is true' });
+    }
+    
+    if (useExistingPublication && customTables && customTables.length === 0) {
+      return res.status(400).json({ error: 'At least one table must be selected from the publications' });
     }
 
     const tables = customTables || [];
 
     // Generate names from subscription name (sanitize for SQL identifiers)
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-    const publicationName = useExistingPublication 
-      ? existingPublicationName 
-      : `${sanitizedName}_publication`;
     const subscriptionName = `${sanitizedName}_subscription`;
     const slotName = `${sanitizedName}_slot`;
 
@@ -131,25 +138,58 @@ export default async function handler(
         });
       }
 
-      // Step 1: Handle publication
-      const escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
+      // Step 1: Handle publications
+      let finalPublicationName: string = ''; // For database storage
+      let escapedPubName: string = ''; // For CREATE SUBSCRIPTION command
       
       if (useExistingPublication) {
-        // Verify existing publication exists
-        const pubCheck = await sourcePool.query(`
-          SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
-        `, [publicationName]);
+        // Verify all existing publications exist
+        for (const pubName of publicationNames) {
+          const pubCheck = await sourcePool.query(`
+            SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
+          `, [pubName]);
 
-        if (pubCheck.rows[0].count === '0') {
-          await sourcePool.end();
-          await targetPool.end();
-          return res.status(404).json({
-            error: 'Publication not found',
-            details: `Publication '${publicationName}' does not exist on source database.`,
-          });
+          if (pubCheck.rows[0].count === '0') {
+            await sourcePool.end();
+            await targetPool.end();
+            return res.status(404).json({
+              error: 'Publication not found',
+              details: `Publication '${pubName}' does not exist on source database.`,
+            });
+          }
+        }
+        
+        // If customTables are provided, verify they exist in the selected publications
+        if (customTables && customTables.length > 0) {
+          // Get all tables from selected publications
+          const allPubTables: string[] = [];
+          for (const pubName of publicationNames) {
+            const pubTablesResult = await sourcePool.query(`
+              SELECT schemaname || '.' || tablename AS table_name
+              FROM pg_publication_tables
+              WHERE pubname = $1
+            `, [pubName]);
+            const pubTables = pubTablesResult.rows.map((r: any) => r.table_name);
+            allPubTables.push(...pubTables);
+          }
+          
+          // Check if all selected tables are in the publications
+          const invalidTables = customTables.filter((t: string) => !allPubTables.includes(t));
+          if (invalidTables.length > 0) {
+            await sourcePool.end();
+            await targetPool.end();
+            return res.status(400).json({
+              error: 'Invalid table selection',
+              details: `The following tables are not in the selected publications: ${invalidTables.join(', ')}`,
+            });
+          }
         }
       } else {
         // Create new publication
+        const publicationName = `${sanitizedName}_publication`;
+        escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
+        finalPublicationName = publicationName;
+        
         const pubCheck = await sourcePool.query(`
           SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
         `, [publicationName]);
@@ -239,15 +279,29 @@ export default async function handler(
 
       // Escape identifiers to prevent SQL injection
       const escapedSubName = subscriptionName.replace(/"/g, '""');
-      // escapedPubName already defined above at line 129
       const escapedSlotName = slotName.replace(/'/g, "''");
       // Escape connection string - replace single quotes with two single quotes
       const escapedConnString = connString.replace(/'/g, "''");
       
+      // Build publication list for CREATE SUBSCRIPTION
+      let publicationList: string;
+      
+      if (useExistingPublication) {
+        // Multiple publications: escape each and join with commas
+        const escapedPubNames = publicationNames.map((pubName: string) => 
+          `"${pubName.replace(/"/g, '""')}"`
+        );
+        publicationList = escapedPubNames.join(', ');
+        finalPublicationName = publicationNames.join(','); // Store as comma-separated
+      } else {
+        // Single new publication - escapedPubName already defined above
+        publicationList = escapedPubName;
+      }
+      
       await targetPool.query(`
         CREATE SUBSCRIPTION "${escapedSubName}"
         CONNECTION '${escapedConnString}'
-        PUBLICATION "${escapedPubName}"
+        PUBLICATION ${publicationList}
         WITH (
           create_slot = ${createSlot},
           slot_name = '${escapedSlotName}',
@@ -270,7 +324,7 @@ export default async function handler(
         description || `Subscription with ${tables.length} table${tables.length !== 1 ? 's' : ''}`,
         finalSourceConnection,
         finalTargetConnection,
-        publicationName,
+        finalPublicationName,
         subscriptionName,
         slotName,
         true,
@@ -291,7 +345,7 @@ export default async function handler(
       res.status(201).json({
         id: subscriptionId,
         name: result.rows[0].name,
-        publicationName,
+        publicationName: finalPublicationName,
         subscriptionName,
         slotName,
         tables: tables.length,

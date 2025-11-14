@@ -68,7 +68,7 @@ export class BackupTaskStreamingService extends BackupTaskService {
         args.push('--schema-only');
       }
 
-      args.push('--no-owner', '--no-privileges');
+      args.push('--no-owner', '--no-privileges', '--verbose');
 
       // Add table includes
       if (task.tables && task.tables.length > 0) {
@@ -107,21 +107,35 @@ export class BackupTaskStreamingService extends BackupTaskService {
         },
       });
 
+      // Log initial command info
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Starting backup: ${filename}`, stdoutLineCount).catch(err => {
+        console.error(`[backup-streaming] Error logging initial message:`, err);
+      });
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Tables: ${task.tables?.length || 0}, Excluded: ${task.exclude_tables?.length || 0}`, stdoutLineCount).catch(() => {});
+
       // Handle stdout
       childProcess.stdout?.on('data', async (data: Buffer) => {
-        const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
+        const text = data.toString('utf-8');
+        const lines = text.split('\n').filter(l => l.trim().length > 0);
         for (const line of lines) {
           stdoutLineCount++;
-          await taskLoggerService.appendLog(taskId, 'stdout', line, stdoutLineCount);
+          await taskLoggerService.appendLog(taskId, 'stdout', line.trim(), stdoutLineCount).catch(err => {
+            console.error(`[backup-streaming] Error appending log line:`, err);
+          });
         }
       });
 
       // Handle stderr
       childProcess.stderr?.on('data', async (data: Buffer) => {
-        const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
+        const text = data.toString('utf-8');
+        const lines = text.split('\n').filter(l => l.trim().length > 0);
         for (const line of lines) {
           stderrLineCount++;
-          await taskLoggerService.appendLog(taskId, 'stderr', line, stderrLineCount);
+          await taskLoggerService.appendLog(taskId, 'stderr', line.trim(), stderrLineCount).catch(err => {
+            console.error(`[backup-streaming] Error appending stderr log line:`, err);
+          });
         }
       });
 
@@ -130,9 +144,13 @@ export class BackupTaskStreamingService extends BackupTaskService {
         childProcess.on('close', async (code) => {
           this.activeProcesses.delete(taskId);
 
+          // Log completion
+          await taskLoggerService.appendLog(taskId, 'stdout', `Backup process completed with exit code: ${code}`, stdoutLineCount + 1).catch(() => {});
+
           // Check if cancelled
           const currentTask = await this.getTask(taskId);
           if (currentTask?.status === 'cancelled') {
+            await taskLoggerService.appendLog(taskId, 'stdout', 'Backup was cancelled', stdoutLineCount + 2).catch(() => {});
             try {
               await fs.unlink(filepath).catch(() => {});
             } catch {}
@@ -141,6 +159,7 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
           if (code !== 0) {
             const errorMsg = `pg_dump exited with code ${code}`;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount + 1).catch(() => {});
             await this.updateTask(taskId, {
               status: 'failed',
               error_message: errorMsg,
@@ -151,6 +170,8 @@ export class BackupTaskStreamingService extends BackupTaskService {
           // Check if file was created
           const stats = await fs.stat(filepath);
           const fileSize = stats.size;
+          
+          await taskLoggerService.appendLog(taskId, 'stdout', `Backup file created: ${filename} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`, stdoutLineCount + 2).catch(() => {});
 
           await this.updateTask(taskId, {
             status: 'completed',

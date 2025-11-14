@@ -21,7 +21,8 @@ export default function NewSubscription() {
   const [error, setError] = useState<string | null>(null);
   const [useExistingPublication, setUseExistingPublication] = useState(false);
   const [existingPublications, setExistingPublications] = useState<Array<{name: string; tables: string[]; tableCount: number}>>([]);
-  const [selectedPublication, setSelectedPublication] = useState<string>('');
+  const [selectedPublications, setSelectedPublications] = useState<string[]>([]); // Support multiple publications
+  const [selectedTablesFromPub, setSelectedTablesFromPub] = useState<Set<string>>(new Set()); // Selected tables from publications
   const [loadingPublications, setLoadingPublications] = useState(false);
 
   useEffect(() => {
@@ -133,10 +134,10 @@ export default function NewSubscription() {
           description,
           sourceDbConnection: finalSourceConnection,
           targetDbConnection: finalTargetConnection,
-          customTables: useExistingPublication ? undefined : selectedTables,
+          customTables: useExistingPublication ? Array.from(selectedTablesFromPub) : selectedTables,
           dataCopy,
           useExistingPublication,
-          existingPublicationName: useExistingPublication ? selectedPublication : undefined,
+          existingPublicationNames: useExistingPublication ? selectedPublications : undefined,
         }),
       });
 
@@ -240,7 +241,8 @@ export default function NewSubscription() {
                     checked={!useExistingPublication}
                     onChange={() => {
                       setUseExistingPublication(false);
-                      setSelectedPublication('');
+                      setSelectedPublications([]);
+                      setSelectedTablesFromPub(new Set());
                     }}
                     className="mr-2"
                   />
@@ -271,7 +273,7 @@ export default function NewSubscription() {
               </div>
 
               {useExistingPublication && (
-                <div className="ml-6 mt-4 space-y-3">
+                <div className="ml-6 mt-4 space-y-4">
                   {loadingPublications ? (
                     <div className="text-sm text-gray-500">Loading publications...</div>
                   ) : existingPublications.length === 0 ? (
@@ -280,35 +282,125 @@ export default function NewSubscription() {
                     </div>
                   ) : (
                     <>
-                      <select
-                        value={selectedPublication}
-                        onChange={(e) => setSelectedPublication(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      >
-                        <option value="">Select a publication...</option>
-                        {existingPublications.map((pub) => (
-                          <option key={pub.name} value={pub.name}>
-                            {pub.name} ({pub.tableCount} table{pub.tableCount !== 1 ? 's' : ''})
-                          </option>
-                        ))}
-                      </select>
-                      {selectedPublication && (
-                        <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
-                          <div className="text-sm font-medium text-gray-900 mb-2">
-                            Tables in this publication:
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Select Publications (you can select multiple):
+                        </label>
+                        <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded p-2">
+                          {existingPublications.map((pub) => (
+                            <label
+                              key={pub.name}
+                              className="flex items-start p-2 rounded hover:bg-gray-50 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedPublications.includes(pub.name)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedPublications([...selectedPublications, pub.name]);
+                                    // Auto-select all tables from this publication
+                                    const pubTables = pub.tables || [];
+                                    setSelectedTablesFromPub(new Set([...selectedTablesFromPub, ...pubTables]));
+                                  } else {
+                                    setSelectedPublications(selectedPublications.filter(p => p !== pub.name));
+                                    // Remove tables from this publication
+                                    const pubTables = pub.tables || [];
+                                    const newSet = new Set(selectedTablesFromPub);
+                                    pubTables.forEach(t => newSet.delete(t));
+                                    setSelectedTablesFromPub(newSet);
+                                  }
+                                }}
+                                className="mt-1 mr-2"
+                              />
+                              <div className="flex-1">
+                                <span className="text-sm font-medium text-gray-900 font-mono">{pub.name}</span>
+                                <span className="text-xs text-gray-500 ml-2">
+                                  ({pub.tableCount} table{pub.tableCount !== 1 ? 's' : ''})
+                                </span>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      {selectedPublications.length > 0 && (
+                        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded">
+                          <div className="text-sm font-medium text-gray-900 mb-3">
+                            Select Tables from Selected Publications ({selectedTablesFromPub.size} selected):
                           </div>
-                          <div className="max-h-32 overflow-y-auto">
-                            <ul className="list-disc list-inside text-xs font-mono text-gray-600 space-y-1">
-                              {existingPublications.find(p => p.name === selectedPublication)?.tables.slice(0, 20).map((table) => (
-                                <li key={table}>{table}</li>
-                              ))}
-                              {(existingPublications.find(p => p.name === selectedPublication)?.tables.length || 0) > 20 && (
-                                <li className="text-gray-500">
-                                  ... and {(existingPublications.find(p => p.name === selectedPublication)?.tables.length || 0) - 20} more
-                                </li>
-                              )}
-                            </ul>
+                          <div className="mb-2">
+                            <input
+                              type="text"
+                              value={searchQuery}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              placeholder="Search tables..."
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            />
                           </div>
+                          <div className="mb-2 flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // Select all tables from selected publications
+                                const allTables = selectedPublications.flatMap(pubName => {
+                                  const pub = existingPublications.find(p => p.name === pubName);
+                                  return pub?.tables || [];
+                                });
+                                setSelectedTablesFromPub(new Set(allTables));
+                              }}
+                              className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                            >
+                              Select All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTablesFromPub(new Set())}
+                              className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                            >
+                              Clear All
+                            </button>
+                          </div>
+                          <div className="max-h-64 overflow-y-auto border border-gray-200 rounded p-2 bg-white">
+                            {selectedPublications.flatMap(pubName => {
+                              const pub = existingPublications.find(p => p.name === pubName);
+                              if (!pub) return [];
+                              const filtered = pub.tables.filter(t => 
+                                t.toLowerCase().includes(searchQuery.toLowerCase())
+                              );
+                              return filtered.map(table => (
+                                <label
+                                  key={`${pubName}-${table}`}
+                                  className="flex items-center p-1 rounded hover:bg-gray-50 cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTablesFromPub.has(table)}
+                                    onChange={(e) => {
+                                      const newSet = new Set(selectedTablesFromPub);
+                                      if (e.target.checked) {
+                                        newSet.add(table);
+                                      } else {
+                                        newSet.delete(table);
+                                      }
+                                      setSelectedTablesFromPub(newSet);
+                                    }}
+                                    className="mr-2"
+                                  />
+                                  <span className="text-xs font-mono text-gray-700">{table}</span>
+                                  <span className="text-xs text-gray-400 ml-2">({pubName})</span>
+                                </label>
+                              ));
+                            })}
+                            {selectedPublications.flatMap(pubName => {
+                              const pub = existingPublications.find(p => p.name === pubName);
+                              return pub?.tables || [];
+                            }).filter(t => t.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
+                              <div className="text-center py-4 text-gray-500 text-sm">No tables found</div>
+                            )}
+                          </div>
+                          <p className="mt-2 text-xs text-gray-500">
+                            You can select a subset of tables from the selected publications. Only selected tables will be replicated.
+                          </p>
                         </div>
                       )}
                     </>
@@ -491,7 +583,7 @@ export default function NewSubscription() {
             </Link>
             <button
               type="submit"
-              disabled={creating || (!useExistingPublication && selectedTables.length === 0) || (useExistingPublication && !selectedPublication) || !name}
+              disabled={creating || (!useExistingPublication && selectedTables.length === 0) || (useExistingPublication && (selectedPublications.length === 0 || selectedTablesFromPub.size === 0)) || !name}
               className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {creating ? 'Creating...' : 'Create Subscription'}

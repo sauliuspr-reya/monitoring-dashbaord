@@ -13,6 +13,8 @@ interface Publication {
   tables: string[];
   tableCount: number;
   subscriptions?: string[]; // Subscriptions using this publication
+  taskId?: string | null; // Backup task ID that created this publication
+  createdAt?: string | null; // When publication was created
 }
 
 export default function PublicationsPage() {
@@ -320,6 +322,9 @@ export default function PublicationsPage() {
                       Tables
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Created
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Subscriptions
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -373,6 +378,30 @@ export default function PublicationsPage() {
                                   </ul>
                                 </div>
                               </details>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="text-sm text-gray-600">
+                          {pub.createdAt ? (
+                            <div>
+                              <div>{new Date(pub.createdAt).toLocaleDateString()}</div>
+                              <div className="text-xs text-gray-500 mt-1">
+                                {new Date(pub.createdAt).toLocaleTimeString()}
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-gray-400">Unknown</span>
+                          )}
+                          {pub.taskId && (
+                            <div className="mt-1">
+                              <Link
+                                href={`/backup?task=${pub.taskId}`}
+                                className="text-xs text-blue-600 hover:text-blue-800 font-mono"
+                              >
+                                Task: {pub.taskId.substring(0, 8)}...
+                              </Link>
                             </div>
                           )}
                         </div>
