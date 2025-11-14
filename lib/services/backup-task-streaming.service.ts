@@ -45,17 +45,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
       const conn = this.parseConnectionString(connectionString);
 
-      // Generate filename
+      // Generate filename using task ID
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      let filename: string;
-      if (task.tables && task.tables.length > 0) {
-        const tableList = task.tables.slice(0, 3).join('_');
-        filename = `backup_${timestamp}_${tableList}${task.tables.length > 3 ? `_and_${task.tables.length - 3}_more` : ''}.sql`;
-      } else if (task.exclude_tables && task.exclude_tables.length > 0) {
-        filename = `backup_${timestamp}_.sql`;
-      } else {
-        filename = `backup_${timestamp}_.sql`;
-      }
+      const filename = `backup_${timestamp}_${taskId}.sql`;
       const filepath = path.join(backupDir, filename);
 
       await this.updateTask(taskId, {
@@ -93,10 +85,28 @@ export class BackupTaskStreamingService extends BackupTaskService {
         }
       }
 
-      args.push('-f', filepath);
+      // Instead of using -f flag, we'll pipe stdout to file using shell
+      // This allows us to capture verbose stderr output while stdout goes to file
+      // Build the command as a shell string
+      const escapedPassword = conn.password.replace(/'/g, "'\"'\"'");
+      const escapedFilepath = filepath.replace(/'/g, "'\"'\"'");
+      const argsString = args.map(arg => {
+        // Escape arguments that might contain special characters
+        if (arg.includes(' ') || arg.includes("'") || arg.includes('"')) {
+          return `'${arg.replace(/'/g, "'\"'\"'")}'`;
+        }
+        return arg;
+      }).join(' ');
+      
+      // Use shell to redirect stdout to file, stderr goes to stderr pipe (which we capture)
+      // pg_dump sends backup data to stdout and verbose progress to stderr
+      const shellCommand = `PGPASSWORD='${escapedPassword}' pg_dump ${argsString} > '${escapedFilepath}'`;
 
-      // Spawn pg_dump process
-      const childProcess = spawn('pg_dump', args, {
+      stdoutLineCount++;
+      await taskLoggerService.appendLog(taskId, 'stdout', `Executing: ${shellCommand.replace(/PGPASSWORD='[^']+'/, "PGPASSWORD='***'")}`, stdoutLineCount).catch(() => {});
+
+      // Spawn shell process to execute the command
+      const childProcess = spawn('/bin/sh', ['-c', shellCommand], {
         env: {
           ...process.env,
           PGPASSWORD: conn.password,
@@ -130,31 +140,46 @@ export class BackupTaskStreamingService extends BackupTaskService {
       stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Command: pg_dump ${args.join(' ').replace(/PGPASSWORD=[^\s]+/g, 'PGPASSWORD=***')}`, stdoutLineCount).catch(() => {});
 
-      // Handle stdout
+      // With shell redirection (> file), stdout goes to file, stderr goes to stderr pipe
+      // pg_dump sends backup SQL to stdout (redirected to file) and verbose progress to stderr
+      // So stdout pipe will be empty, but stderr will have all the verbose output
+      
+      // Handle stdout (should be empty since it's redirected to file via shell)
       childProcess.stdout?.on('data', async (data: Buffer) => {
         const text = data.toString('utf-8');
-        const lines = text.split('\n').filter(l => l.trim().length > 0);
-        for (const line of lines) {
-          stdoutLineCount++;
-          await taskLoggerService.appendLog(taskId, 'stdout', line.trim(), stdoutLineCount).catch(err => {
-            console.error(`[backup-streaming] Error appending log line:`, err);
-          });
+        if (text.trim().length > 0) {
+          // This shouldn't happen, but log it if it does
+          const lines = text.split('\n').filter(l => l.trim().length > 0);
+          for (const line of lines) {
+            stdoutLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stdout', `[Unexpected stdout] ${line.trim()}`, stdoutLineCount).catch(err => {
+              console.error(`[backup-streaming] Error appending log line:`, err);
+            });
+          }
         }
       });
 
-      // Handle stderr - log all errors immediately
+      // Handle stderr - this contains all the verbose output from pg_dump
+      // pg_dump sends progress messages, table dumps, etc. to stderr
       childProcess.stderr?.on('data', async (data: Buffer) => {
         const text = data.toString('utf-8');
-        const lines = text.split('\n').filter(l => l.trim().length > 0);
-        for (const line of lines) {
-          stderrLineCount++;
-          await taskLoggerService.appendLog(taskId, 'stderr', line.trim(), stderrLineCount).catch(err => {
-            console.error(`[backup-streaming] Error appending stderr log line:`, err);
-          });
+        // Preserve all lines including empty ones for formatting
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          // Log the line (skip only the last empty line from split if it's truly empty)
+          if (line.length > 0 || i < lines.length - 1) {
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', line, stderrLineCount).catch(err => {
+              console.error(`[backup-streaming] Error appending stderr log line:`, err);
+            });
+          }
           
-          // If we see certain error patterns, mark as failed immediately
+          // Check for error patterns
           const errorLine = line.trim().toLowerCase();
-          if (errorLine.includes('fatal') || errorLine.includes('error') || errorLine.includes('connection') || errorLine.includes('timeout')) {
+          if (errorLine.includes('fatal') || errorLine.includes('error') || 
+              (errorLine.includes('connection') && errorLine.includes('refused')) || 
+              errorLine.includes('timeout')) {
             console.error(`[backup-streaming] Detected error in stderr: ${line.trim()}`);
           }
         }
@@ -179,8 +204,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
           }
 
           if (code !== 0) {
-            const errorMsg = `pg_dump exited with code ${code}`;
-            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount + 1).catch(() => {});
+            const errorMsg = `pg_dump exited with code ${code}. Check stderr logs for details.`;
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
             await this.updateTask(taskId, {
               status: 'failed',
               error_message: errorMsg,

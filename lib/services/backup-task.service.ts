@@ -337,18 +337,9 @@ export class BackupTaskService {
       // Parse connection string
       const conn = this.parseConnectionString(connectionString);
 
-      // Generate filename
+      // Generate filename using task ID
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      let filename: string;
-      if (task.tables && task.tables.length > 0) {
-        const tableList = task.tables.slice(0, 3).join('_');
-        filename = `backup_${timestamp}_${tableList}${task.tables.length > 3 ? `_and_${task.tables.length - 3}_more` : ''}.sql`;
-      } else if (task.exclude_tables && task.exclude_tables.length > 0) {
-        // For exclude mode, use a simpler filename
-        filename = `backup_${timestamp}_.sql`;
-      } else {
-        filename = `backup_${timestamp}_.sql`;
-      }
+      const filename = `backup_${timestamp}_${taskId}.sql`;
       const filepath = path.join(backupDir, filename);
 
       // Set filepath immediately so file size polling can work while backup is running
