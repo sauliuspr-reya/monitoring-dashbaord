@@ -124,7 +124,7 @@ export class BackupTaskStreamingService extends BackupTaskService {
       stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Full file path: ${filepath}`, stdoutLineCount).catch(() => {});
       stdoutLineCount++;
-      await taskLoggerService.appendLog(taskId, 'stdout', `Log files: ${stdoutPath}, ${stderrPath}`, stdoutLineCount).catch(() => {});
+      await taskLoggerService.appendLog(taskId, 'stdout', `Log files (persistent): ${stdoutPath}, ${stderrPath}`, stdoutLineCount).catch(() => {});
       stdoutLineCount++;
       await taskLoggerService.appendLog(taskId, 'stdout', `Tables: ${task.tables?.length || 0}, Excluded: ${task.exclude_tables?.length || 0}`, stdoutLineCount).catch(() => {});
       stdoutLineCount++;

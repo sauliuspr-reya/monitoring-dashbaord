@@ -3,12 +3,14 @@
 ## Log Storage Location
 
 Backup task logs are stored in:
-- **Default**: `/tmp/backup-logs/`
+- **Default**: `/backup/logs/` (persists across pod restarts)
 - **Custom**: Set `BACKUP_LOG_DIR` environment variable to change location
 
 Log files are named:
 - `${taskId}.stdout.log` - Standard output
 - `${taskId}.stderr.log` - Standard error
+
+**Note**: Logs are stored in the same persistent volume as backup files (`/backup`), so they remain accessible even after pod restarts and after tasks complete.
 
 ## Viewing Logs
 
@@ -26,16 +28,19 @@ Log files are named:
 
 ```bash
 # List all log files
-ls -lh /tmp/backup-logs/
+ls -lh /backup/logs/
 
 # View stdout for a specific task
-cat /tmp/backup-logs/{taskId}.stdout.log
+cat /backup/logs/{taskId}.stdout.log
 
 # View stderr for a specific task
-cat /tmp/backup-logs/{taskId}.stderr.log
+cat /backup/logs/{taskId}.stderr.log
 
 # Follow logs in real-time (for running tasks)
-tail -f /tmp/backup-logs/{taskId}.stdout.log
+tail -f /backup/logs/{taskId}.stdout.log
+
+# View logs for completed tasks (logs persist after completion)
+ls -lth /backup/logs/ | head -20
 ```
 
 ### Via API
@@ -80,7 +85,7 @@ When `pg_dump` uses the `-f` flag to write directly to a file, it produces minim
 
 1. **Check if logs exist**:
    ```bash
-   ls -la /tmp/backup-logs/{taskId}.*.log
+   ls -la /backup/logs/{taskId}.*.log
    ```
 
 2. **Check database**:
@@ -104,7 +109,7 @@ If logs appear empty:
 
 1. **Check permissions**:
    ```bash
-   ls -ld /tmp/backup-logs
+   ls -ld /backup/logs
    ```
 
 2. **Check environment variable**:
@@ -118,6 +123,8 @@ If logs appear empty:
 
 - Logs are kept in the database (last 100 lines per log type)
 - Full logs are kept in files indefinitely (unless manually deleted)
+- Logs persist across pod restarts (stored in `/backup/logs/` on persistent volume)
+- Logs remain accessible after task completion
 - Use `taskLoggerService.cleanupOldLogs(days)` to clean up old files
 
 ## Database Schema

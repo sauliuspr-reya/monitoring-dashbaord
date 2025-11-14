@@ -271,12 +271,15 @@ export default function BackupJobList({
                             <span className="font-medium text-gray-700">Log Files:</span>
                             <div className="mt-1 space-y-1">
                               <div className="font-mono text-gray-600 text-xs break-all bg-white p-1 rounded border">
-                                /tmp/backup-logs/{task.id}.stdout.log
+                                /backup/logs/{task.id}.stdout.log
                               </div>
                               <div className="font-mono text-gray-600 text-xs break-all bg-white p-1 rounded border">
-                                /tmp/backup-logs/{task.id}.stderr.log
+                                /backup/logs/{task.id}.stderr.log
                               </div>
                             </div>
+                            <p className="text-xs text-gray-500 mt-1 italic">
+                              Logs persist across pod restarts and remain accessible after task completion
+                            </p>
                           </div>
                         </div>
                       </div>

@@ -13,7 +13,8 @@ export interface TaskLogEntry {
 
 export class TaskLoggerService {
   private readonly MAX_DB_LINES = 100; // Keep last 100 lines in DB
-  private readonly LOG_DIR = process.env.BACKUP_LOG_DIR || '/tmp/backup-logs';
+  // Use /backup/logs to persist across pod restarts (same volume as backup files)
+  private readonly LOG_DIR = process.env.BACKUP_LOG_DIR || '/backup/logs';
 
   /**
    * Get log directory path, create if needed
