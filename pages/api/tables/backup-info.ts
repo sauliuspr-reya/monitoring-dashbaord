@@ -57,16 +57,34 @@ export default async function handler(
     };
     
     result.rows.forEach((row: any) => {
-      const normalizedTable = normalizeTableName(row.table_name);
+      // Normalize table name from database (might be "public.TableName" or "TableName" or '"TableName"')
+      let normalizedTable = row.table_name;
+      
+      // Remove schema prefix
+      normalizedTable = normalizedTable.replace(/^public\./i, '');
+      
+      // Remove quotes
+      normalizedTable = normalizedTable.replace(/^"/, '').replace(/"$/, '');
+      
+      // Also try lowercase version for matching
+      const normalizedLower = normalizedTable.toLowerCase();
       
       // Only set if this is a newer backup or we don't have one yet
-      const existing = backupInfoMap.get(normalizedTable);
+      const existing = backupInfoMap.get(normalizedTable) || backupInfoMap.get(normalizedLower);
       if (!existing || (row.backup_date && (!existing.lastBackupDate || new Date(row.backup_date) > new Date(existing.lastBackupDate)))) {
         backupInfoMap.set(normalizedTable, {
           tableName: normalizedTable,
           lastBackupDate: row.backup_date ? new Date(row.backup_date).toISOString() : undefined,
           lastBackupId: row.backup_id,
         });
+        // Also store lowercase version for case-insensitive matching
+        if (normalizedLower !== normalizedTable) {
+          backupInfoMap.set(normalizedLower, {
+            tableName: normalizedTable,
+            lastBackupDate: row.backup_date ? new Date(row.backup_date).toISOString() : undefined,
+            lastBackupId: row.backup_id,
+          });
+        }
       }
     });
 

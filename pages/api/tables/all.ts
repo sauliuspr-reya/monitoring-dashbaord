@@ -237,6 +237,50 @@ export default async function handler(
     const sourceLocation = sourceConnection ? detectDatabaseLocation(sourceConnection, 'source') : null;
     const targetLocation = targetConnection ? detectDatabaseLocation(targetConnection, 'target') : null;
 
+    // Get backup info for tables
+    let tableBackupInfo = new Map<string, { lastBackupDate?: string; lastBackupId?: string; tables?: string[] }>();
+    try {
+      const backupInfoResult = await monitoringPool.query(`
+        WITH table_backups AS (
+          SELECT 
+            UNNEST(tables) as table_name,
+            id as backup_id,
+            completed_at as backup_date,
+            tables as backup_tables,
+            ROW_NUMBER() OVER (PARTITION BY UNNEST(tables) ORDER BY completed_at DESC NULLS LAST, created_at DESC) as rn
+          FROM backup_tasks
+          WHERE 
+            task_type = 'backup'
+            AND status = 'completed'
+            AND tables IS NOT NULL
+            AND array_length(tables, 1) > 0
+            AND completed_at IS NOT NULL
+        )
+        SELECT 
+          table_name,
+          backup_id,
+          backup_date,
+          backup_tables
+        FROM table_backups
+        WHERE rn = 1
+      `);
+      
+      backupInfoResult.rows.forEach((row: any) => {
+        const normalizedTable = row.table_name
+          .replace(/^public\./, '')
+          .replace(/^"/, '')
+          .replace(/"$/, '');
+        
+        tableBackupInfo.set(normalizedTable, {
+          lastBackupDate: row.backup_date ? new Date(row.backup_date).toISOString() : undefined,
+          lastBackupId: row.backup_id,
+          tables: row.backup_tables,
+        });
+      });
+    } catch (error) {
+      console.warn('[tables/all] Failed to fetch backup info:', error);
+    }
+
     // Get historical metrics for rate of change calculation
     // Query table_replication_metrics to get previous row counts per table
     // Fetch both 1-hour and 24-hour historical data
@@ -831,6 +875,9 @@ export default async function handler(
                 }
                 // Note: If no subscriptions exist, metrics tracking is skipped (this is fine - it's optional)
 
+                // Get backup info for this table
+                const backupInfo = tableBackupInfo.get(table.toLowerCase());
+                
                 return {
                   tableName,
                   schema,
@@ -847,6 +894,9 @@ export default async function handler(
                   serviceDetails, // Detailed service write information
                   databaseLocation, // Which database this table is in
                   hasReplicationRisk, // ⚠️ CRITICAL: Writers on both sides = PK conflict risk
+                  lastBackupDate: backupInfo?.lastBackupDate,
+                  lastBackupId: backupInfo?.lastBackupId,
+                  lastBackupTables: backupInfo?.tables,
                   hasActiveWriters,
                   shouldReplicate, // ✅ Safe to replicate (only source writers or none)
                   writersOnSource: sourceWriters, // Services writing to AWS

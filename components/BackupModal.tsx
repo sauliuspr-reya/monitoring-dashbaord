@@ -114,7 +114,11 @@ export default function BackupModal({
   // Merge backup info into tables
   const tablesWithBackupInfo = useMemo(() => {
     return tables.map(table => {
-      const backupInfo = backupInfoMap.get(table.table);
+      // Try exact match first, then lowercase match
+      const backupInfo = backupInfoMap.get(table.table) || 
+                        backupInfoMap.get(table.table.toLowerCase()) ||
+                        backupInfoMap.get(table.tableName) ||
+                        backupInfoMap.get(table.tableName.toLowerCase());
       return {
         ...table,
         lastBackupDate: backupInfo?.lastBackupDate,
@@ -351,7 +355,7 @@ export default function BackupModal({
 
           {/* Tables Table */}
           <div className="border border-gray-200 rounded-lg overflow-hidden">
-            <div className="overflow-x-auto max-h-96">
+            <div className="overflow-x-auto" style={{ maxHeight: '60vh' }}>
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
@@ -488,18 +492,28 @@ export default function BackupModal({
                         </td>
                         <td className="px-4 py-2 text-sm text-gray-600">
                           {table.lastBackupDate ? (
-                            <span className="text-xs" title={new Date(table.lastBackupDate).toLocaleString()}>
-                              {formatDate(table.lastBackupDate)}
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="text-xs" title={new Date(table.lastBackupDate).toLocaleString()}>
+                                {formatDate(table.lastBackupDate)}
+                              </span>
+                              <span className="text-xs text-gray-500 mt-0.5">
+                                {new Date(table.lastBackupDate).toLocaleDateString()}
+                              </span>
+                            </div>
                           ) : (
                             <span className="text-xs text-gray-400">—</span>
                           )}
                         </td>
                         <td className="px-4 py-2 text-sm text-gray-600">
                           {table.lastBackupId ? (
-                            <span className="text-xs font-mono text-blue-600" title={table.lastBackupId}>
-                              {table.lastBackupId.substring(0, 8)}...
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="text-xs font-mono text-blue-600" title={table.lastBackupId}>
+                                {table.lastBackupId.substring(0, 8)}...
+                              </span>
+                              <span className="text-xs text-gray-500 mt-0.5 font-mono">
+                                {table.lastBackupId.substring(8, 16)}...
+                              </span>
+                            </div>
                           ) : (
                             <span className="text-xs text-gray-400">—</span>
                           )}

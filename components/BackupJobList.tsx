@@ -228,18 +228,24 @@ export default function BackupJobList({
                         {task.tables && task.tables.length > 0 && (
                           <div className="col-span-2">
                             <span className="font-medium text-gray-700">Tables ({task.tables.length}):</span>
-                            <div className="mt-1 text-gray-600 font-mono text-xs">
-                              {task.tables.slice(0, 10).join(', ')}
-                              {task.tables.length > 10 && ` ... and ${task.tables.length - 10} more`}
+                            <div className="mt-1 text-gray-600 font-mono text-xs flex flex-wrap gap-1">
+                              {task.tables.map((t, idx) => (
+                                <span key={idx} className="px-1.5 py-0.5 bg-gray-100 rounded">
+                                  {t.replace(/^public\./, '').replace(/^"/, '').replace(/"$/, '')}
+                                </span>
+                              ))}
                             </div>
                           </div>
                         )}
                         {task.exclude_tables && task.exclude_tables.length > 0 && (
                           <div className="col-span-2">
                             <span className="font-medium text-gray-700">Excluded Tables ({task.exclude_tables.length}):</span>
-                            <div className="mt-1 text-gray-600 font-mono text-xs">
-                              {task.exclude_tables.slice(0, 10).join(', ')}
-                              {task.exclude_tables.length > 10 && ` ... and ${task.exclude_tables.length - 10} more`}
+                            <div className="mt-1 text-gray-600 font-mono text-xs flex flex-wrap gap-1">
+                              {task.exclude_tables.map((t, idx) => (
+                                <span key={idx} className="px-1.5 py-0.5 bg-orange-100 rounded">
+                                  {t.replace(/^public\./, '').replace(/^"/, '').replace(/"$/, '')}
+                                </span>
+                              ))}
                             </div>
                           </div>
                         )}
@@ -288,30 +294,30 @@ export default function BackupJobList({
 
                       {/* Action Buttons */}
                       <div className="flex items-center space-x-2 pt-2 border-t border-gray-200">
-                        {(task.status === 'running' || task.status === 'pending') && (
-                          <button
-                            onClick={() => onCancel(task.id)}
-                            className="px-3 py-1.5 text-xs font-medium text-yellow-700 bg-yellow-50 border border-yellow-200 rounded hover:bg-yellow-100 transition-colors"
-                          >
-                            Cancel Job
-                          </button>
-                        )}
-                        {task.status === 'completed' && task.slot_name && (
-                          <button
-                            onClick={() => {
-                              const defaultName = task.slot_name
-                                ? `subscription_${task.slot_name.replace('backup_slot_', '')}`
-                                : 'subscription';
-                              const subName = prompt('Enter subscription name:', defaultName);
-                              if (subName) {
-                                onCreateSubscription(task.id, subName);
-                              }
-                            }}
-                            className="px-3 py-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded hover:bg-green-100 transition-colors"
-                          >
-                            Create Subscription
-                          </button>
-                        )}
+                    {(task.status === 'running' || task.status === 'pending') && (
+                      <button
+                        onClick={() => onCancel(task.id)}
+                        className="px-3 py-1.5 text-xs font-medium text-yellow-700 bg-yellow-50 border border-yellow-200 rounded hover:bg-yellow-100 transition-colors"
+                      >
+                        Cancel Job
+                      </button>
+                    )}
+                    {task.status === 'completed' && task.slot_name && (
+                      <button
+                        onClick={() => {
+                          const defaultName = task.slot_name
+                            ? `subscription_${task.slot_name.replace('backup_slot_', '')}`
+                            : 'subscription';
+                          const subName = prompt('Enter subscription name:', defaultName);
+                          if (subName) {
+                            onCreateSubscription(task.id, subName);
+                          }
+                        }}
+                        className="px-3 py-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded hover:bg-green-100 transition-colors"
+                      >
+                        Create Subscription
+                      </button>
+                    )}
                         {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled' || task.status === 'stalled') && (
                           <button
                             onClick={() => onDelete(task.id, !!task.filepath)}

@@ -331,6 +331,14 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
       this.activeProcesses.set(taskId, childProcess);
 
+      // Store PID for stalled detection
+      await this.updateTask(taskId, {
+        metadata: {
+          ...task.metadata,
+          process_pid: childProcess.pid,
+        },
+      });
+
       // Handle stdout
       childProcess.stdout?.on('data', async (data: Buffer) => {
         const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);

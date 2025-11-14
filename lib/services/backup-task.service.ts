@@ -622,20 +622,39 @@ export class BackupTaskService {
   }
 
   /**
-   * Check for stalled backup tasks and update their status
+   * Check if a process is still running by PID
+   */
+  private async isProcessRunning(pid: number): Promise<boolean> {
+    try {
+      // On Unix-like systems, sending signal 0 checks if process exists
+      process.kill(pid, 0);
+      return true;
+    } catch (error: any) {
+      // ESRCH means process doesn't exist
+      if (error.code === 'ESRCH') {
+        return false;
+      }
+      // Other errors might mean permission denied, assume process exists
+      return true;
+    }
+  }
+
+  /**
+   * Check for stalled backup and restore tasks and update their status
    * A task is considered stalled if:
    * 1. It's been running for more than 2 minutes without file size change, OR
-   * 2. It's been running but hasn't updated its status in more than 2 minutes
+   * 2. It's been running but hasn't updated its status in more than 2 minutes, OR
+   * 3. The process has exited but the task is still marked as running
    */
   async checkForStalledTasks(): Promise<{ checked: number; stalled: number }> {
     const pool = getDbPool();
     const STALL_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
     const now = new Date();
 
-    // Get all running backup tasks
+    // Get all running tasks (both backup and restore)
     const result = await pool.query(`
       SELECT * FROM backup_tasks 
-      WHERE status = 'running' AND task_type = 'backup'
+      WHERE status = 'running'
       ORDER BY updated_at ASC
     `);
 
@@ -646,21 +665,34 @@ export class BackupTaskService {
       let isStalled = false;
       let stallReason = '';
 
-      // Check 1: Has the task been updated recently?
-      const timeSinceUpdate = now.getTime() - new Date(task.updated_at).getTime();
-      if (timeSinceUpdate > STALL_THRESHOLD_MS) {
-        isStalled = true;
-        stallReason = `No status update for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`;
+      // Check 1: If process PID exists, check if process is still running
+      const metadata = task.metadata || {};
+      const processPid = metadata.process_pid;
+      
+      if (processPid && typeof processPid === 'number') {
+        const isRunning = await this.isProcessRunning(processPid);
+        if (!isRunning) {
+          isStalled = true;
+          stallReason = `Process (PID ${processPid}) has exited but task is still marked as running`;
+        }
       }
 
-      // Check 2: If file exists, has file size changed in the last 2 minutes?
-      if (task.filepath && task.file_size !== undefined && !isStalled) {
+      // Check 2: Has the task been updated recently?
+      if (!isStalled) {
+        const timeSinceUpdate = now.getTime() - new Date(task.updated_at).getTime();
+        if (timeSinceUpdate > STALL_THRESHOLD_MS) {
+          isStalled = true;
+          stallReason = `No status update for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`;
+        }
+      }
+
+      // Check 3: For backup tasks, if file exists, has file size changed in the last 2 minutes?
+      if (task.task_type === 'backup' && task.filepath && task.file_size !== undefined && !isStalled) {
         try {
           const stats = await fs.stat(task.filepath);
           const currentFileSize = stats.size;
           
           // Get last file size update from metadata
-          const metadata = task.metadata || {};
           const lastFileSizeUpdate = metadata.lastFileSizeUpdate 
             ? new Date(metadata.lastFileSizeUpdate).getTime()
             : new Date(task.updated_at).getTime();
@@ -683,6 +715,7 @@ export class BackupTaskService {
           }
         } catch (error) {
           // File doesn't exist or can't be accessed - might be stalled
+          const timeSinceUpdate = now.getTime() - new Date(task.updated_at).getTime();
           if (timeSinceUpdate > STALL_THRESHOLD_MS) {
             isStalled = true;
             stallReason = `File not accessible and no update for ${Math.round(timeSinceUpdate / 1000 / 60)} minutes`;
@@ -691,12 +724,13 @@ export class BackupTaskService {
       }
 
       if (isStalled) {
+        const taskTypeLabel = task.task_type === 'backup' ? 'Backup' : 'Restore';
         await this.updateTask(task.id, {
           status: 'stalled',
-          error_message: `Backup stalled: ${stallReason}`,
+          error_message: `${taskTypeLabel} stalled: ${stallReason}`,
         });
         stalledCount++;
-        console.log(`[backup-task] Marked task ${task.id} as stalled: ${stallReason}`);
+        console.log(`[backup-task] Marked ${task.task_type} task ${task.id} as stalled: ${stallReason}`);
       }
     }
 

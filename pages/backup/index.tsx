@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Navbar from '@/components/Navbar';
 import BackupJobList from '@/components/BackupJobList';
+import CompletedBackupsList from '@/components/CompletedBackupsList';
 import BackupModal from '@/components/BackupModal';
 import RestoreModal from '@/components/RestoreModal';
 
@@ -400,11 +401,14 @@ export default function BackupPage() {
             </div>
           )}
 
-          {/* Backup & Restore Jobs Section */}
-          <div className="mb-6">
+          {/* Jobs Section */}
+          <div className="mb-8">
             <div className="flex justify-between items-center mb-4">
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Jobs</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Backup and restore task history
+                </p>
               </div>
               <button
                 onClick={loadBackupTasks}
@@ -438,7 +442,7 @@ export default function BackupPage() {
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
-                  Backups
+                  Backup Tasks
                   <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
                     {backupTasks.filter(t => t.task_type === 'backup').length}
                   </span>
@@ -451,7 +455,7 @@ export default function BackupPage() {
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
-                  Restores
+                  Restore Tasks
                   <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
                     {backupTasks.filter(t => t.task_type === 'restore').length}
                   </span>
@@ -479,6 +483,32 @@ export default function BackupPage() {
                 formatBytes={formatBytes}
               />
             )}
+          </div>
+
+          {/* Completed Backups Section */}
+          <div className="mb-6">
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Completed Backups</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Backup files available for restore from filesystem
+                </p>
+              </div>
+              <button
+                onClick={loadBackups}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+              >
+                ↻ Refresh
+              </button>
+            </div>
+
+            <CompletedBackupsList
+              backups={backups}
+              loading={loadingBackups}
+              onRestore={handleRestoreFromModal}
+              restoring={restoring}
+              formatBytes={formatBytes}
+            />
           </div>
         </div>
       </div>

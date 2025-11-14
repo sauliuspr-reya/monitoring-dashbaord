@@ -41,6 +41,9 @@ interface TableInfo {
   rateOfChange1Hour?: number | null; // Rows per minute over last 1 hour
   rateOfChange24Hour?: number | null; // Rows per minute over last 24 hours
   loading?: boolean; // Flag to indicate stats are still being loaded
+  lastBackupDate?: string;
+  lastBackupId?: string;
+  lastBackupTables?: string[];
 }
 
 export default function TablesPage() {
@@ -578,6 +581,12 @@ export default function TablesPage() {
                   >
                     Safety Status <SortIcon column="safetyStatus" />
                   </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last Backup
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Backup ID
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -700,6 +709,46 @@ export default function TablesPage() {
                         <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">
                           —
                         </span>
+                      )}
+                    </td>
+                    {/* Last Backup Column */}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+                      {table.lastBackupDate ? (
+                        <div className="flex flex-col">
+                          <span title={new Date(table.lastBackupDate).toLocaleString()}>
+                            {(() => {
+                              const date = new Date(table.lastBackupDate);
+                              const now = new Date();
+                              const diffMs = now.getTime() - date.getTime();
+                              const diffMins = Math.floor(diffMs / 60000);
+                              const diffHours = Math.floor(diffMs / 3600000);
+                              const diffDays = Math.floor(diffMs / 86400000);
+                              
+                              if (diffMins < 1) return 'Just now';
+                              if (diffMins < 60) return `${diffMins}m ago`;
+                              if (diffHours < 24) return `${diffHours}h ago`;
+                              if (diffDays < 7) return `${diffDays}d ago`;
+                              return date.toLocaleDateString();
+                            })()}
+                          </span>
+                          {table.lastBackupTables && table.lastBackupTables.length > 0 && (
+                            <span className="text-xs text-gray-500 mt-0.5">
+                              {table.lastBackupTables.length} table{table.lastBackupTables.length !== 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                    {/* Backup ID Column */}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm">
+                      {table.lastBackupId ? (
+                        <span className="font-mono text-blue-600 text-xs" title={table.lastBackupId}>
+                          {table.lastBackupId.substring(0, 8)}...
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
                       )}
                     </td>
                   </tr>
