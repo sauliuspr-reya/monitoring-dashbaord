@@ -24,6 +24,7 @@ export default function NewSubscription() {
   const [selectedPublications, setSelectedPublications] = useState<string[]>([]); // Support multiple publications
   const [selectedTablesFromPub, setSelectedTablesFromPub] = useState<Set<string>>(new Set()); // Selected tables from publications
   const [loadingPublications, setLoadingPublications] = useState(false);
+  const [loadingConnections, setLoadingConnections] = useState(false);
 
   useEffect(() => {
     loadTables();
@@ -76,18 +77,29 @@ export default function NewSubscription() {
 
   const loadConnectionStrings = async () => {
     try {
+      setLoadingConnections(true);
       const res = await fetch('/api/config/connections');
+      if (!res.ok) {
+        throw new Error('Failed to load connection strings');
+      }
       const data = await res.json();
       if (data.sourceDbConnection) {
         setDefaultSourceConnection(data.sourceDbConnection);
-        setSourceDbConnection(data.sourceDbConnection);
+        if (!useCustomConnections) {
+          setSourceDbConnection(data.sourceDbConnection);
+        }
       }
       if (data.targetDbConnection) {
         setDefaultTargetConnection(data.targetDbConnection);
-        setTargetDbConnection(data.targetDbConnection);
+        if (!useCustomConnections) {
+          setTargetDbConnection(data.targetDbConnection);
+        }
       }
-    } catch (err) {
-      // Ignore if endpoint doesn't exist
+    } catch (err: any) {
+      console.error('Error loading connection strings:', err);
+      setError(`Failed to load default connection strings: ${err.message || 'Unknown error'}`);
+    } finally {
+      setLoadingConnections(false);
     }
   };
 
@@ -467,9 +479,28 @@ export default function NewSubscription() {
 
           {/* Connection Strings */}
           <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              {useExistingPublication ? '3. Database Connections' : '4. Database Connections'}
-            </h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">
+                {useExistingPublication ? '3. Database Connections' : '4. Database Connections'}
+              </h2>
+              <button
+                type="button"
+                onClick={loadConnectionStrings}
+                disabled={loadingConnections}
+                className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {loadingConnections ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600"></span>
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    ↻ Reload Defaults
+                  </>
+                )}
+              </button>
+            </div>
             <div className="mb-4">
               <label className="flex items-center">
                 <input
@@ -478,17 +509,31 @@ export default function NewSubscription() {
                   onChange={(e) => {
                     setUseCustomConnections(e.target.checked);
                     if (!e.target.checked) {
-                      // Reset to defaults
-                      setSourceDbConnection(defaultSourceConnection);
-                      setTargetDbConnection(defaultTargetConnection);
+                      // Reset to defaults - reload if not already loaded
+                      if (!defaultSourceConnection && !defaultTargetConnection) {
+                        loadConnectionStrings();
+                      } else {
+                        setSourceDbConnection(defaultSourceConnection);
+                        setTargetDbConnection(defaultTargetConnection);
+                      }
                     }
                   }}
                   className="mr-2"
                 />
                 <span className="text-sm text-gray-700">
-                  Use custom connection strings (defaults from environment variables)
+                  Use custom connection strings (defaults from environment variables or K8s secrets)
                 </span>
               </label>
+              {!useCustomConnections && (defaultSourceConnection || defaultTargetConnection) && (
+                <p className="mt-2 text-xs text-gray-500 ml-6">
+                  Using default connections. Click &quot;Reload Defaults&quot; to refresh from environment variables or K8s secrets.
+                </p>
+              )}
+              {!useCustomConnections && !defaultSourceConnection && !defaultTargetConnection && (
+                <p className="mt-2 text-xs text-yellow-600 ml-6">
+                  ⚠ No default connections found. Click &quot;Reload Defaults&quot; to try loading from environment variables or K8s secrets.
+                </p>
+              )}
             </div>
             <div className="space-y-4">
               <div>

@@ -27,6 +27,7 @@ interface TableInfo {
   sourceSize: number;
   targetSize: number;
   subscriptions: string[];
+  replicationStatus?: 'active' | 'stopped' | 'error' | 'none'; // Actual replication health status
   goldskyIndexed: boolean;
   goldskyPipeline?: string;
   services?: string[];
@@ -207,8 +208,10 @@ export default function TablesPage() {
           bVal = b.rateOfChange1Hour ?? -Infinity;
           break;
         case 'replicationStatus':
-          aVal = a.subscriptions.length > 0 ? 1 : 0;
-          bVal = b.subscriptions.length > 0 ? 1 : 0;
+          // Sort by actual replication status: active=0, stopped=1, error=2, none=3
+          const statusOrder = { 'active': 0, 'stopped': 1, 'error': 2, 'none': 3 };
+          aVal = statusOrder[a.replicationStatus || 'none'] ?? 3;
+          bVal = statusOrder[b.replicationStatus || 'none'] ?? 3;
           break;
         case 'safetyStatus':
           // Unsafe = 0, Safe = 1, None = 2
@@ -685,9 +688,21 @@ export default function TablesPage() {
                     </td>
                     {/* Replication Status Column */}
                     <td className="px-4 py-3 whitespace-nowrap text-center">
-                      {table.subscriptions && table.subscriptions.length > 0 ? (
-                        <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded font-medium">
-                          🔄 Replicating
+                      {table.replicationStatus === 'active' ? (
+                        <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded font-medium" title="Subscription is enabled and worker is running">
+                          ✅ Active
+                        </span>
+                      ) : table.replicationStatus === 'stopped' ? (
+                        <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded font-medium" title="Subscription is enabled but worker is not running">
+                          ⏸ Stopped
+                        </span>
+                      ) : table.replicationStatus === 'error' ? (
+                        <span className="px-2 py-1 bg-red-100 text-red-800 text-xs rounded font-medium" title="Subscription is enabled but worker failed">
+                          ❌ Error
+                        </span>
+                      ) : table.subscriptions && table.subscriptions.length > 0 ? (
+                        <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded" title="Table is in subscription but status unknown">
+                          ⚠ Unknown
                         </span>
                       ) : (
                         <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">

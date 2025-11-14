@@ -598,6 +598,63 @@ export default async function handler(
       // Then process stats in background (but we can't do true background in Next.js, so we'll process synchronously)
       // For now, we'll process all stats but return the quick list structure so UI can show it
 
+      // OPTIMIZATION: Fetch all table estimates in bulk using reltuples (super fast!)
+      // This is much faster than querying each table individually
+      const sourceStatsMap = new Map<string, { estimate: number; size: number }>();
+      const targetStatsMap = new Map<string, { estimate: number; size: number }>();
+      
+      // Get all source table stats in one query
+      if (sourcePool) {
+        try {
+          const sourceStatsResult = await sourcePool.query(`
+            SELECT 
+              n.nspname || '.' || c.relname as table_name,
+              c.reltuples::bigint as estimated_rows,
+              pg_total_relation_size(c.oid) as size
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'r'
+              AND n.nspname = 'public'
+            ORDER BY c.reltuples DESC
+          `);
+          
+          for (const row of sourceStatsResult.rows) {
+            sourceStatsMap.set(row.table_name, {
+              estimate: parseInt(row.estimated_rows || '0', 10),
+              size: parseInt(row.size || '0', 10),
+            });
+          }
+        } catch (err: any) {
+          console.warn('[tables/all] Failed to fetch bulk source stats:', err.message);
+        }
+      }
+      
+      // Get all target table stats in one query
+      if (targetPool) {
+        try {
+          const targetStatsResult = await targetPool.query(`
+            SELECT 
+              n.nspname || '.' || c.relname as table_name,
+              c.reltuples::bigint as estimated_rows,
+              pg_total_relation_size(c.oid) as size
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'r'
+              AND n.nspname = 'public'
+            ORDER BY c.reltuples DESC
+          `);
+          
+          for (const row of targetStatsResult.rows) {
+            targetStatsMap.set(row.table_name, {
+              estimate: parseInt(row.estimated_rows || '0', 10),
+              size: parseInt(row.size || '0', 10),
+            });
+          }
+        } catch (err: any) {
+          console.warn('[tables/all] Failed to fetch bulk target stats:', err.message);
+        }
+      }
+
       // Get stats for all tables - process in batches to avoid connection pool exhaustion
       // Process 10 tables at a time to prevent timeouts
       const BATCH_SIZE = 10;
@@ -612,140 +669,115 @@ export default async function handler(
           const [schema, table] = tableName.split('.');
 
           try {
-            // Get source row count - use estimate for large tables
-            // First check if table exists on source (skip if no source connection)
+            // Get source row count and size from bulk stats map (super fast!)
             let sourceCount = 0;
             let sourceSize = 0;
-            let useEstimate = false;
+            const sourceStats = sourceStatsMap.get(tableName);
             
-            if (sourcePool) {
-              try {
-                // Optimized: Get both estimate and size in a single query using pg_class
-                // This is much faster than separate queries
-                const sourceStatsResult = await sourcePool.query(`
-                  SELECT 
-                    c.reltuples::bigint as estimate,
-                    pg_total_relation_size(c.oid) as size
-                  FROM pg_class c
-                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE c.relname = $1 
-                    AND n.nspname = $2
-                    AND c.relkind = 'r'
-                `, [table, schema]);
-              
-              if (sourceStatsResult.rows.length > 0) {
-                const estimate = parseInt(sourceStatsResult.rows[0]?.estimate || '0', 10);
-                sourceSize = parseInt(sourceStatsResult.rows[0]?.size || '0', 10);
-                
-                // Use estimate for all tables - COUNT(*) is too slow for large tables
-                // Only use exact count for very small tables (< 10k) if we need precision
-                useEstimate = estimate > 10000; // Use estimate for tables > 10k rows (much faster)
-                
-                if (useEstimate) {
-                  sourceCount = Math.max(0, estimate);
-                } else {
-                  // For very small tables, use exact count (but this is still slow, so prefer estimate)
-                  try {
-                    const sourceCountResult = await sourcePool.query(`
+            if (sourceStats) {
+              sourceCount = Math.max(0, sourceStats.estimate);
+              sourceSize = sourceStats.size;
+            }
+            
+            // Get target row count and size from bulk stats map (super fast!)
+            let targetCount = 0;
+            let targetSize = 0;
+            const targetStats = targetStatsMap.get(tableName);
+            
+            if (targetStats) {
+              targetCount = Math.max(0, targetStats.estimate);
+              targetSize = targetStats.size;
+            }
+            
+            // For tables in subscriptions, get exact counts for accurate diff calculation
+            const tableSubsForCount = tableSubscriptions.get(tableName) || [];
+            const isInSubscription = tableSubsForCount.length > 0;
+            
+            if (isInSubscription) {
+              // Get exact source count if in subscription
+              if (sourcePool && sourceStats) {
+                try {
+                  const sourceCountResult = await sourcePool.query(`
+                    SELECT COUNT(*) as count
+                    FROM ${tableName}::regclass
+                  `).catch(() => {
+                    return sourcePool.query(`
                       SELECT COUNT(*) as count
-                      FROM ${tableName}::regclass
+                      FROM ${schema}."${table}"
                     `).catch(() => {
                       return sourcePool.query(`
                         SELECT COUNT(*) as count
-                        FROM ${schema}."${table}"
-                      `).catch(() => {
-                        return sourcePool.query(`
-                          SELECT COUNT(*) as count
-                          FROM ${schema}.${table}
-                        `);
-                      });
+                        FROM ${schema}.${table}
+                      `);
                     });
-                    sourceCount = parseInt(sourceCountResult.rows[0]?.count || '0', 10);
-                  } catch {
-                    // Fallback to estimate if COUNT fails
-                    sourceCount = Math.max(0, estimate);
-                    useEstimate = true;
-                  }
+                  });
+                  sourceCount = parseInt(sourceCountResult.rows[0]?.count || '0', 10);
+                } catch {
+                  // Fallback to estimate if COUNT fails
+                  sourceCount = Math.max(0, sourceStats.estimate);
                 }
               }
-              } catch (err: any) {
-                // Table doesn't exist on source or query failed - this is normal for tables that only exist on one side
-                // Only log if it's not a "does not exist" or timeout error
-                if (!err.message?.includes('does not exist') && 
-                    !err.message?.includes('relation') && 
-                    !err.message?.includes('timeout')) {
-                  console.warn(`[tables/all] Source query failed for ${tableName}:`, err.message);
-                }
-              }
-            } else {
-              // No source pool - skip source stats (this is fine, we can show tables from target only)
-            }
-
-            // Get target row count and size - optimized single query (skip if no target connection)
-            let targetCount = 0;
-            let targetSize = 0;
-            
-            if (targetPool) {
-              try {
-                // Optimized: Get both estimate and size in a single query
-                const targetStatsResult = await targetPool.query(`
-                  SELECT 
-                    c.reltuples::bigint as estimate,
-                    pg_total_relation_size(c.oid) as size
-                  FROM pg_class c
-                  JOIN pg_namespace n ON n.oid = c.relnamespace
-                  WHERE c.relname = $1 
-                    AND n.nspname = $2
-                    AND c.relkind = 'r'
-                `, [table, schema]);
               
-              if (targetStatsResult.rows.length > 0) {
-                const estimate = parseInt(targetStatsResult.rows[0]?.estimate || '0', 10);
-                targetSize = parseInt(targetStatsResult.rows[0]?.size || '0', 10);
-                
-                // Use estimate for all tables - COUNT(*) is too slow
-                // Only use exact count for very small tables if needed
-                const useExactCount = estimate > 0 && estimate <= 10000;
-                
-                if (useExactCount) {
-                  try {
-                    const targetCountResult = await targetPool.query(`
+              // Get exact target count if in subscription
+              if (targetPool && targetStats) {
+                try {
+                  const targetCountResult = await targetPool.query(`
+                    SELECT COUNT(*) as count
+                    FROM ${tableName}::regclass
+                  `).catch(() => {
+                    return targetPool.query(`
                       SELECT COUNT(*) as count
-                      FROM ${tableName}::regclass
+                      FROM ${schema}."${table}"
                     `).catch(() => {
                       return targetPool.query(`
                         SELECT COUNT(*) as count
-                        FROM ${schema}."${table}"
-                      `).catch(() => {
-                        return targetPool.query(`
-                          SELECT COUNT(*) as count
-                          FROM ${schema}.${table}
-                        `);
-                      });
+                        FROM ${schema}.${table}
+                      `);
                     });
-                    targetCount = parseInt(targetCountResult.rows[0]?.count || '0', 10);
-                  } catch {
-                    // Fallback to estimate if COUNT fails
-                    targetCount = Math.max(0, estimate);
-                  }
-                } else {
-                  targetCount = Math.max(0, estimate);
+                  });
+                  targetCount = parseInt(targetCountResult.rows[0]?.count || '0', 10);
+                } catch {
+                  // Fallback to estimate if COUNT fails
+                  targetCount = Math.max(0, targetStats.estimate);
                 }
               }
-              } catch (err: any) {
-                // Table doesn't exist on target or query failed - this is normal for tables that only exist on one side
-                // Only log if it's not a "does not exist" or timeout error
-                if (!err.message?.includes('does not exist') && 
-                    !err.message?.includes('relation') && 
-                    !err.message?.includes('timeout')) {
-                  console.warn(`[tables/all] Target query failed for ${tableName}:`, err.message);
-                }
-              }
-            } else {
-              // No target pool - skip target stats (this is fine, we can show tables from source only)
             }
 
             const tableSubs = tableSubscriptions.get(tableName) || []; // This table's subscriptions (which subscriptions include this table)
+            
+            // Check actual replication status for subscriptions that include this table
+            let replicationStatus: 'active' | 'stopped' | 'error' | 'none' = 'none';
+            if (tableSubs.length > 0 && targetPool) {
+              // Check if any subscription is actually active and replicating
+              try {
+                const subStatusResult = await targetPool.query(`
+                  SELECT 
+                    s.subname,
+                    s.subenabled as enabled,
+                    ss.pid as worker_pid,
+                    ss.latest_end_time
+                  FROM pg_subscription s
+                  LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
+                  WHERE s.subname = ANY($1)
+                  LIMIT 1
+                `, [tableSubs]);
+                
+                if (subStatusResult.rows.length > 0) {
+                  const sub = subStatusResult.rows[0];
+                  if (sub.enabled && sub.worker_pid !== null) {
+                    replicationStatus = 'active';
+                  } else if (sub.enabled && sub.worker_pid === null) {
+                    replicationStatus = 'error';
+                  } else {
+                    replicationStatus = 'stopped';
+                  }
+                }
+              } catch (err) {
+                // If we can't check status, assume it's configured but status unknown
+                replicationStatus = 'active'; // Default to active if we can't check
+              }
+            }
+            
             const goldskyIndexed = goldskyTables.has(table) || goldskyTables.has(tableName);
             const goldskyPipeline = tableToPipeline.get(table) || tableToPipeline.get(tableName);
             
@@ -888,6 +920,7 @@ export default async function handler(
                   sourceSize,
                   targetSize,
                   subscriptions: tableSubs,
+                  replicationStatus,
                   goldskyIndexed,
                   goldskyPipeline,
                   services,
@@ -902,7 +935,7 @@ export default async function handler(
                   writersOnSource: sourceWriters, // Services writing to AWS
                   writersOnTarget: targetWriters, // Services writing to GCP
                   writersOnBoth: hasWritersOnBothSides, // True if writers on both sides
-                  isEstimate: useEstimate,
+                  isEstimate: !isInSubscription, // Use estimate unless we got exact count for subscribed tables
                   rateOfChange1Hour, // Rows per minute over last hour
                   rateOfChange24Hour, // Rows per minute over last 24 hours
                 };
@@ -917,6 +950,7 @@ export default async function handler(
               sourceSize: 0,
               targetSize: 0,
               subscriptions: tableSubscriptions.get(tableName) || [],
+              replicationStatus: 'none', // Will be set when processing stats
               goldskyIndexed: goldskyTables.has(table) || goldskyTables.has(tableName),
               goldskyPipeline: tableToPipeline.get(table) || tableToPipeline.get(tableName),
               services: Array.from(tableToServices.get(table.toLowerCase()) || new Set<string>()) as string[],
