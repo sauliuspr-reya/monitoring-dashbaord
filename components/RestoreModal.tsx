@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface BackupInfo {
   filename: string;
@@ -13,9 +13,53 @@ interface RestoreModalProps {
   onClose: () => void;
   backups: BackupInfo[];
   loading: boolean;
-  onRestore: (filename: string) => void;
+  onRestore: (filename: string, cleanRestore?: boolean) => void;
   restoring: { [key: string]: boolean };
   formatBytes: (bytes: number) => string;
+}
+
+// Helper function to safely parse and display database connection info
+function parseDbConnectionInfo(connectionString: string): { host: string; database: string; user: string; display: string } | null {
+  try {
+    const url = new URL(connectionString);
+    const host = url.hostname;
+    const port = url.port || '5432';
+    const database = url.pathname.slice(1).split('?')[0];
+    const user = decodeURIComponent(url.username || '');
+    
+    return {
+      host,
+      database,
+      user,
+      display: `${user}@${host}:${port}/${database}`,
+    };
+  } catch {
+    // Try parsing as space-separated key=value format
+    try {
+      const params: any = {};
+      connectionString.split(' ').forEach(param => {
+        const [key, value] = param.split('=');
+        if (key && value) {
+          params[key] = value;
+        }
+      });
+      
+      const host = params.host || params.hostname || '';
+      const port = params.port || '5432';
+      const database = params.database || params.dbname || '';
+      const user = params.user || params.userid || '';
+      
+      if (host && database && user) {
+        return {
+          host,
+          database,
+          user,
+          display: `${user}@${host}:${port}/${database}`,
+        };
+      }
+    } catch {}
+  }
+  return null;
 }
 
 export default function RestoreModal({
@@ -28,10 +72,34 @@ export default function RestoreModal({
   formatBytes,
 }: RestoreModalProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [cleanRestore, setCleanRestore] = useState(false);
+  const [targetDbInfo, setTargetDbInfo] = useState<{ host: string; database: string; user: string; display: string } | null>(null);
+  const [loadingDbInfo, setLoadingDbInfo] = useState(false);
 
   const filteredBackups = backups.filter(backup =>
     backup.filename.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Fetch target database connection info when modal opens
+  useEffect(() => {
+    if (isOpen && !targetDbInfo && !loadingDbInfo) {
+      setLoadingDbInfo(true);
+      fetch('/api/config/connections')
+        .then(res => res.json())
+        .then(data => {
+          if (data.targetDbConnection) {
+            const info = parseDbConnectionInfo(data.targetDbConnection);
+            setTargetDbInfo(info);
+          }
+        })
+        .catch(err => {
+          console.error('Failed to fetch target database info:', err);
+        })
+        .finally(() => {
+          setLoadingDbInfo(false);
+        });
+    }
+  }, [isOpen, targetDbInfo, loadingDbInfo]);
 
   if (!isOpen) return null;
 
@@ -44,6 +112,11 @@ export default function RestoreModal({
             <h2 className="text-xl font-semibold text-gray-900">Restore Backup</h2>
             <p className="text-sm text-gray-600 mt-1">
               Select a backup file to restore to target database
+              {targetDbInfo && (
+                <span className="ml-2 text-xs font-mono bg-blue-50 px-2 py-0.5 rounded">
+                  {targetDbInfo.display}
+                </span>
+              )}
             </p>
           </div>
           <button
@@ -56,6 +129,37 @@ export default function RestoreModal({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-6">
+          {/* Options */}
+          <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <div className="flex items-start">
+              <input
+                type="checkbox"
+                id="cleanRestore"
+                checked={cleanRestore}
+                onChange={(e) => setCleanRestore(e.target.checked)}
+                className="mt-1 mr-3 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+              />
+              <div className="flex-1">
+                <label htmlFor="cleanRestore" className="text-sm font-medium text-gray-900 cursor-pointer">
+                  Clean Restore (Truncate/Drop existing data)
+                </label>
+                <p className="text-xs text-gray-600 mt-1">
+                  {cleanRestore ? (
+                    <>
+                      <strong>Enabled:</strong> Existing tables will be truncated (plain SQL) or dropped (custom format) before restore.
+                      This ensures a clean restore with no duplicate data.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Disabled:</strong> Data will be restored on top of existing data. This may cause conflicts or duplicates.
+                      Enable this for a clean restore.
+                    </>
+                  )}
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Search */}
           <div className="mb-4">
             <input
@@ -107,8 +211,35 @@ export default function RestoreModal({
                         <td className="px-4 py-3 text-center">
                           <button
                             onClick={() => {
-                              if (confirm(`Restore backup ${backup.filename}? This will overwrite existing tables.`)) {
-                                onRestore(backup.filename);
+                              // Build detailed confirmation message
+                              const dbInfo = targetDbInfo 
+                                ? `\n\nTarget Database: ${targetDbInfo.display}`
+                                : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
+                              
+                              const warning = cleanRestore
+                                ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
+                                  `You are about to restore backup:\n` +
+                                  `  ${backup.filename}\n` +
+                                  `  Size: ${formatBytes(backup.size)}\n` +
+                                  `${dbInfo}\n\n` +
+                                  `CLEAN RESTORE MODE:\n` +
+                                  `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                                  `  • All existing data will be PERMANENTLY DELETED\n` +
+                                  `  • This action CANNOT be undone\n\n` +
+                                  `Are you absolutely sure you want to proceed?`
+                                : `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                                  `You are about to restore backup:\n` +
+                                  `  ${backup.filename}\n` +
+                                  `  Size: ${formatBytes(backup.size)}\n` +
+                                  `${dbInfo}\n\n` +
+                                  `REGULAR RESTORE MODE:\n` +
+                                  `  • Data will be restored on top of existing tables\n` +
+                                  `  • This may cause duplicates or conflicts\n` +
+                                  `  • Consider using "Clean Restore" for a fresh restore\n\n` +
+                                  `Are you sure you want to proceed?`;
+                              
+                              if (confirm(warning)) {
+                                onRestore(backup.filename, cleanRestore);
                               }
                             }}
                             disabled={restoring[backup.filename]}

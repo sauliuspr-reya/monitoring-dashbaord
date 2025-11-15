@@ -59,7 +59,7 @@ export default async function handler(
   }
 
   try {
-    const { filename, connectionString, dryRun = false } = req.body;
+    const { filename, connectionString, dryRun = false, cleanRestore = false } = req.body;
 
     if (!filename) {
       return res.status(400).json({ error: 'Backup filename is required' });
@@ -99,7 +99,7 @@ export default async function handler(
     }
 
     // Create background restore task
-    console.log(`[restore] Creating restore task for file: ${filename}`);
+    console.log(`[restore] Creating restore task for file: ${filename}, cleanRestore: ${cleanRestore}`);
     const task = await backupTaskService.createTask('restore', {
       filename,
       connectionString: targetConnectionString,
@@ -108,8 +108,14 @@ export default async function handler(
 
     console.log(`[restore] Task created with ID: ${task.id}, status: ${task.status}`);
 
-    // Update task with filepath
-    await backupTaskService.updateTask(task.id, { filepath });
+    // Update task with filepath and metadata (cleanRestore flag)
+    await backupTaskService.updateTask(task.id, { 
+      filepath,
+      metadata: {
+        ...(task.metadata || {}),
+        cleanRestore: cleanRestore,
+      },
+    });
 
     console.log(`[restore] Starting restore task ${task.id} in background...`);
     // Start restore in background with streaming (don't wait for completion)

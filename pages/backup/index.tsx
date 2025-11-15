@@ -303,7 +303,7 @@ export default function BackupPage() {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
-  const handleRestoreFromModal = async (filename: string) => {
+  const handleRestoreFromModal = async (filename: string, cleanRestore: boolean = false) => {
     try {
       setRestoring(prev => ({ ...prev, [filename]: true }));
       setError(null);
@@ -316,6 +316,7 @@ export default function BackupPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename,
+          cleanRestore,
           dryRun: false,
         }),
       });

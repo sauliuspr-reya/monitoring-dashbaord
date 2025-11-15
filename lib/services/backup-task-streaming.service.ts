@@ -241,16 +241,36 @@ export class BackupTaskStreamingService extends BackupTaskService {
             const stderrActiveRecently = (now - lastStderrActivityTime) < 5 * 60 * 1000;
             
             if (!processRunning) {
-              // Process is not running AND file hasn't grown - definitely stalled
-              // But wait - if process just exited, the close handler will handle it
-              // Only mark as stalled if we're sure it's not just completing
-              const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes and process is not running`;
-              stderrLineCount++;
-              await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
-              await this.updateTask(taskId, {
-                status: 'stalled',
-                error_message: errorMsg,
-              });
+              // Process is not running AND file hasn't grown
+              // Check if task is already completed/failed/cancelled before marking as stalled
+              const currentTask = await this.getTask(taskId);
+              if (currentTask && (currentTask.status === 'completed' || currentTask.status === 'failed' || currentTask.status === 'cancelled')) {
+                // Task already completed - don't mark as stalled, just stop checking
+                clearInterval(sizeCheckInterval);
+                return;
+              }
+              
+              // Process exited but task not marked as completed - might be stalled or just finished
+              // Give it a small grace period (30 seconds) for the close handler to process
+              const timeSinceLastGrowth = now - lastFileSizeTime;
+              if (timeSinceLastGrowth > 30 * 1000) {
+                // More than 30 seconds since last growth and process not running
+                // Check if process just exited (give close handler time to run)
+                const timeSinceProcessExit = now - (lastStderrActivityTime || taskStartTime);
+                if (timeSinceProcessExit < 60 * 1000) {
+                  // Process exited recently (within last minute) - might be completing, wait a bit more
+                  return;
+                }
+                
+                // Process has been gone for a while and file hasn't grown - likely stalled
+                const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes and process is not running`;
+                stderrLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+                await this.updateTask(taskId, {
+                  status: 'stalled',
+                  error_message: errorMsg,
+                });
+              }
             } else if (!stderrActiveRecently) {
               // Process is running but no stderr activity - might be stuck
               const minutesSinceStderr = Math.round((now - lastStderrActivityTime) / 1000 / 60);
@@ -322,6 +342,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
           
           // Clear the size check interval immediately to prevent interference
           clearInterval(sizeCheckInterval);
+          
+          // Small delay to ensure file is fully written
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
           // Log completion
           stdoutLineCount++;
@@ -468,6 +491,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
       let childProcess: ChildProcess;
 
+      // Check if clean restore is requested (from metadata)
+      const cleanRestore = task.metadata?.cleanRestore === true;
+      
       if (isCustomFormat) {
         // Use pg_restore for custom format
         const args = [
@@ -478,8 +504,14 @@ export class BackupTaskStreamingService extends BackupTaskService {
           '--no-owner',
           '--no-privileges',
           '--verbose',
-          task.filepath,
         ];
+        
+        // Add --clean and --if-exists for clean restore
+        if (cleanRestore) {
+          args.push('--clean', '--if-exists');
+        }
+        
+        args.push(task.filepath);
 
         childProcess = spawn('pg_restore', args, {
           env: {
@@ -517,6 +549,85 @@ export class BackupTaskStreamingService extends BackupTaskService {
           });
           childProcess = psql;
         } else {
+          // For plain SQL, we need to handle clean restore differently
+          // If clean restore is requested, we'll truncate tables before restore
+          if (cleanRestore) {
+            // First, get list of tables from the backup file
+            // We'll extract table names and truncate them before restore
+            stdoutLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stdout', 'Clean restore requested: will truncate tables before restore', stdoutLineCount).catch(() => {});
+            
+            // Extract table names from backup file (look for COPY statements)
+            try {
+              const backupContent = await fs.readFile(task.filepath, 'utf-8');
+              const tableMatches = backupContent.match(/^COPY\s+(?:public\.)?([^\s(]+)/gm) || [];
+              const tables = [...new Set(tableMatches.map(m => m.replace(/^COPY\s+(?:public\.)?/, '').replace(/"/g, '')))];
+              
+              if (tables.length > 0) {
+                stdoutLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stdout', `Found ${tables.length} tables to truncate`, stdoutLineCount).catch(() => {});
+                
+                // Build TRUNCATE command
+                const quotedTables = tables.map(t => {
+                  // Handle quoted identifiers
+                  if (t.includes('"')) {
+                    return t;
+                  }
+                  // Quote if contains uppercase or special chars
+                  if (t !== t.toLowerCase() || /[^a-z0-9_]/.test(t)) {
+                    return `"${t}"`;
+                  }
+                  return t;
+                }).join(', ');
+                
+                const truncateSQL = `TRUNCATE TABLE ${quotedTables} CASCADE;`;
+                
+                // Execute truncate via psql
+                const truncateArgs = [
+                  '-h', conn.host,
+                  '-p', conn.port.toString(),
+                  '-U', conn.user,
+                  '-d', conn.database,
+                  '-c', truncateSQL,
+                ];
+                
+                stdoutLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stdout', 'Truncating tables...', stdoutLineCount).catch(() => {});
+                
+                const truncateProcess = spawn('psql', truncateArgs, {
+                  env: {
+                    ...process.env,
+                    PGPASSWORD: conn.password,
+                  },
+                  stdio: ['ignore', 'pipe', 'pipe'],
+                });
+                
+                // Wait for truncate to complete
+                await new Promise<void>((resolve, reject) => {
+                  truncateProcess.on('close', (code) => {
+                    if (code === 0) {
+                      stdoutLineCount++;
+                      taskLoggerService.appendLog(taskId, 'stdout', '✓ Tables truncated successfully', stdoutLineCount).catch(() => {});
+                      resolve();
+                    } else {
+                      stderrLineCount++;
+                      taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate completed with code ${code} (continuing with restore)`, stderrLineCount).catch(() => {});
+                      resolve(); // Continue anyway
+                    }
+                  });
+                  truncateProcess.on('error', (err) => {
+                    stderrLineCount++;
+                    taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate error: ${err.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+                    resolve(); // Continue anyway
+                  });
+                });
+              }
+            } catch (error: any) {
+              stderrLineCount++;
+              await taskLoggerService.appendLog(taskId, 'stderr', `⚠ Could not extract table names for truncate: ${error.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+            }
+          }
+          
           const args = [
             '-h', conn.host,
             '-p', conn.port.toString(),

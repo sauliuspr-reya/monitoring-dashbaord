@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface BackupInfo {
   filename: string;
@@ -19,6 +19,50 @@ interface CompletedBackupsListProps {
   formatBytes: (bytes: number) => string;
 }
 
+// Helper function to safely parse and display database connection info
+function parseDbConnectionInfo(connectionString: string): { host: string; database: string; user: string; display: string } | null {
+  try {
+    const url = new URL(connectionString);
+    const host = url.hostname;
+    const port = url.port || '5432';
+    const database = url.pathname.slice(1).split('?')[0];
+    const user = decodeURIComponent(url.username || '');
+    
+    return {
+      host,
+      database,
+      user,
+      display: `${user}@${host}:${port}/${database}`,
+    };
+  } catch {
+    // Try parsing as space-separated key=value format
+    try {
+      const params: any = {};
+      connectionString.split(' ').forEach(param => {
+        const [key, value] = param.split('=');
+        if (key && value) {
+          params[key] = value;
+        }
+      });
+      
+      const host = params.host || params.hostname || '';
+      const port = params.port || '5432';
+      const database = params.database || params.dbname || '';
+      const user = params.user || params.userid || '';
+      
+      if (host && database && user) {
+        return {
+          host,
+          database,
+          user,
+          display: `${user}@${host}:${port}/${database}`,
+        };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 export default function CompletedBackupsList({
   backups,
   loading,
@@ -28,8 +72,25 @@ export default function CompletedBackupsList({
 }: CompletedBackupsListProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'all' | 'healthy' | 'failed'>('all');
+  const [targetDbInfo, setTargetDbInfo] = useState<{ host: string; database: string; user: string; display: string } | null>(null);
 
-  // Separate backups into healthy and failed/missing
+  // Fetch target database connection info
+  useEffect(() => {
+    if (!targetDbInfo) {
+      fetch('/api/config/connections')
+        .then(res => res.json())
+        .then(data => {
+          if (data.targetDbConnection) {
+            const info = parseDbConnectionInfo(data.targetDbConnection);
+            setTargetDbInfo(info);
+          }
+        })
+        .catch(err => {
+          console.error('Failed to fetch target database info:', err);
+        });
+    }
+  }, [targetDbInfo]);
+
   const healthyBackups = backups.filter(b => b.exists !== false && b.size > 0);
   const failedBackups = backups.filter(b => b.exists === false || b.size === 0);
 
@@ -217,7 +278,24 @@ export default function CompletedBackupsList({
                         if (backup.exists === false) {
                           alert(`Warning: The backup file ${backup.filename} is not found on the filesystem. The restore may fail.`);
                         }
-                        if (confirm(`Restore backup ${backup.filename}? This will overwrite existing tables.`)) {
+                        
+                        // Build detailed confirmation message
+                        const dbInfo = targetDbInfo 
+                          ? `\n\nTarget Database: ${targetDbInfo.display}`
+                          : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
+                        
+                        const confirmMsg = `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                          `You are about to restore backup:\n` +
+                          `  ${backup.filename}\n` +
+                          `  Size: ${formatBytes(backup.size)}\n` +
+                          `${dbInfo}\n\n` +
+                          `WARNING:\n` +
+                          `  • This will restore data on top of existing tables\n` +
+                          `  • This may cause duplicates or conflicts\n` +
+                          `  • Use the Restore Modal for "Clean Restore" option\n\n` +
+                          `Are you sure you want to proceed?`;
+                        
+                        if (confirm(confirmMsg)) {
                           onRestore(backup.filename);
                         }
                       }}
