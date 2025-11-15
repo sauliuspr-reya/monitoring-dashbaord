@@ -198,68 +198,18 @@ export class BackupTaskStreamingService extends BackupTaskService {
         }
       });
 
-      // Wait for process to complete
-      await new Promise<void>((resolve, reject) => {
-        childProcess.on('close', async (code) => {
-          this.activeProcesses.delete(taskId);
-
-          // Log completion
-          await taskLoggerService.appendLog(taskId, 'stdout', `Backup process completed with exit code: ${code}`, stdoutLineCount + 1).catch(() => {});
-
-          // Check if cancelled
-          const currentTask = await this.getTask(taskId);
-          if (currentTask?.status === 'cancelled') {
-            await taskLoggerService.appendLog(taskId, 'stdout', 'Backup was cancelled', stdoutLineCount + 2).catch(() => {});
-            try {
-              await fs.unlink(filepath).catch(() => {});
-            } catch {}
-            return resolve();
-          }
-
-          if (code !== 0) {
-            const errorMsg = `pg_dump exited with code ${code}. Check stderr logs for details.`;
-            stderrLineCount++;
-            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
-            await this.updateTask(taskId, {
-              status: 'failed',
-              error_message: errorMsg,
-            });
-            return reject(new Error(errorMsg));
-          }
-
-          // Check if file was created
-          const stats = await fs.stat(filepath);
-          const fileSize = stats.size;
-          
-          await taskLoggerService.appendLog(taskId, 'stdout', `Backup file created: ${filename} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`, stdoutLineCount + 2).catch(() => {});
-
-          await this.updateTask(taskId, {
-            status: 'completed',
-            filename,
-            filepath,
-            file_size: fileSize,
-            metadata: {
-              ...task.metadata,
-              stdout_lines: stdoutLineCount,
-              stderr_lines: stderrLineCount,
-            },
-          });
-
-          resolve();
-        });
-
-        childProcess.on('error', async (error) => {
-          this.activeProcesses.delete(taskId);
-          await this.updateTask(taskId, {
-            status: 'failed',
-            error_message: error.message,
-          });
-          reject(error);
-        });
-      });
+      // Flag to track if process has completed (to prevent interval from interfering)
+      let processCompleted = false;
+      let processExited = false;
 
       // Update file size periodically during execution and detect failures
       const sizeCheckInterval = setInterval(async () => {
+        // Don't check if process has already completed
+        if (processCompleted || processExited) {
+          clearInterval(sizeCheckInterval);
+          return;
+        }
+
         try {
           const stats = await fs.stat(filepath);
           const currentSize = stats.size;
@@ -292,6 +242,8 @@ export class BackupTaskStreamingService extends BackupTaskService {
             
             if (!processRunning) {
               // Process is not running AND file hasn't grown - definitely stalled
+              // But wait - if process just exited, the close handler will handle it
+              // Only mark as stalled if we're sure it's not just completing
               const errorMsg = `Backup appears stalled: file size ${(currentSize / 1024 / 1024).toFixed(2)} MB hasn't changed in ${Math.round((now - lastFileSizeTime) / 1000 / 60)} minutes and process is not running`;
               stderrLineCount++;
               await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
@@ -333,6 +285,11 @@ export class BackupTaskStreamingService extends BackupTaskService {
           });
         } catch (error: any) {
           // File doesn't exist yet - check if we've waited too long
+          // But don't check if process has already exited (it might be completing)
+          if (processExited) {
+            return;
+          }
+
           const now = Date.now();
           const timeSinceStart = now - taskStartTime;
           
@@ -357,9 +314,93 @@ export class BackupTaskStreamingService extends BackupTaskService {
         }
       }, 2000); // Check every 2 seconds
 
-      // Clear interval when done
-      childProcess.on('close', () => clearInterval(sizeCheckInterval));
-      childProcess.on('error', () => clearInterval(sizeCheckInterval));
+      // Wait for process to complete
+      await new Promise<void>((resolve, reject) => {
+        childProcess.on('close', async (code) => {
+          processExited = true;
+          this.activeProcesses.delete(taskId);
+          
+          // Clear the size check interval immediately to prevent interference
+          clearInterval(sizeCheckInterval);
+
+          // Log completion
+          stdoutLineCount++;
+          await taskLoggerService.appendLog(taskId, 'stdout', `Backup process completed with exit code: ${code}`, stdoutLineCount).catch(() => {});
+
+          // Check if cancelled
+          const currentTask = await this.getTask(taskId);
+          if (currentTask?.status === 'cancelled') {
+            stdoutLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stdout', 'Backup was cancelled', stdoutLineCount).catch(() => {});
+            try {
+              await fs.unlink(filepath).catch(() => {});
+            } catch {}
+            processCompleted = true;
+            return resolve();
+          }
+
+          if (code !== 0) {
+            const errorMsg = `pg_dump exited with code ${code}. Check stderr logs for details.`;
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+            await this.updateTask(taskId, {
+              status: 'failed',
+              error_message: errorMsg,
+            });
+            processCompleted = true;
+            return reject(new Error(errorMsg));
+          }
+
+          // Exit code is 0 - backup completed successfully
+          try {
+            // Check if file was created
+            const stats = await fs.stat(filepath);
+            const fileSize = stats.size;
+            
+            stdoutLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stdout', `✓ Backup completed successfully: ${filename} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`, stdoutLineCount).catch(() => {});
+
+            await this.updateTask(taskId, {
+              status: 'completed',
+              filename,
+              filepath,
+              file_size: fileSize,
+              metadata: {
+                ...task.metadata,
+                stdout_lines: stdoutLineCount,
+                stderr_lines: stderrLineCount,
+                process_pid: undefined, // Clear PID since process is done
+              },
+            });
+
+            processCompleted = true;
+            resolve();
+          } catch (fileError: any) {
+            // File doesn't exist or can't be read
+            const errorMsg = `Backup completed with exit code 0, but file not found: ${filepath}`;
+            stderrLineCount++;
+            await taskLoggerService.appendLog(taskId, 'stderr', errorMsg, stderrLineCount).catch(() => {});
+            await this.updateTask(taskId, {
+              status: 'failed',
+              error_message: errorMsg,
+            });
+            processCompleted = true;
+            reject(new Error(errorMsg));
+          }
+        });
+
+        childProcess.on('error', async (error) => {
+          processExited = true;
+          this.activeProcesses.delete(taskId);
+          clearInterval(sizeCheckInterval);
+          await this.updateTask(taskId, {
+            status: 'failed',
+            error_message: error.message,
+          });
+          processCompleted = true;
+          reject(error);
+        });
+      });
 
     } catch (error: any) {
       this.activeProcesses.delete(taskId);

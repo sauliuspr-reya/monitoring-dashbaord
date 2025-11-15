@@ -109,10 +109,21 @@ export default async function handler(
           tables: row.tables,
         });
       } else {
-        // File exists, add task metadata
+        // File exists, add task metadata (prefer database values for size and date if available)
         const backup = allBackups.get(filename);
         backup.taskId = row.id;
         backup.tables = row.tables;
+        // Use database values if available (more accurate)
+        if (row.file_size) {
+          backup.size = row.file_size;
+        }
+        if (row.completed_at) {
+          backup.created = row.completed_at;
+          backup.modified = row.completed_at;
+        } else if (row.created_at) {
+          backup.created = row.created_at;
+          backup.modified = row.created_at;
+        }
       }
     }
 

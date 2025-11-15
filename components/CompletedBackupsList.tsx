@@ -136,14 +136,17 @@ export default function CompletedBackupsList({
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Filename
                 </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Task ID
+                </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Size
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  Tables
+                  Date
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  Created
+                  Tables
                 </th>
                 <th className="px-6 py-3 text-center text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Actions
@@ -166,8 +169,31 @@ export default function CompletedBackupsList({
                       )}
                     </div>
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    {backup.taskId ? (
+                      <a
+                        href={`/backup?taskId=${backup.taskId}`}
+                        className="text-blue-600 hover:text-blue-800 hover:underline font-mono text-xs"
+                        title={`View task ${backup.taskId}`}
+                      >
+                        {backup.taskId.slice(0, 8)}...
+                      </a>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-600">
                     {backup.size > 0 ? formatBytes(backup.size) : '—'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    {backup.created ? (
+                      <div>
+                        <div>{new Date(backup.created).toLocaleDateString()}</div>
+                        <div className="text-xs text-gray-500">{new Date(backup.created).toLocaleTimeString()}</div>
+                      </div>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600">
                     {backup.tables && backup.tables.length > 0 ? (
@@ -184,9 +210,6 @@ export default function CompletedBackupsList({
                     ) : (
                       <span className="text-gray-400">—</span>
                     )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                    {new Date(backup.created).toLocaleString()}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
                     <button
