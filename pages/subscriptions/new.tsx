@@ -15,6 +15,7 @@ export default function NewSubscription() {
   }>>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
+  const [excludeMode, setExcludeMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showPasteList, setShowPasteList] = useState(false);
   const [pasteListText, setPasteListText] = useState('');
@@ -274,6 +275,20 @@ export default function NewSubscription() {
     setError(null);
     setCreating(true);
 
+    // Validate table selection
+    if (!useExistingPublication) {
+      if (!excludeMode && selectedTables.length === 0) {
+        setError('Please select at least one table to include');
+        setCreating(false);
+        return;
+      }
+      if (excludeMode && selectedTables.length === 0) {
+        setError('Please select at least one table to exclude');
+        setCreating(false);
+        return;
+      }
+    }
+
     try {
       const res = await fetch('/api/subscriptions/create', {
         method: 'POST',
@@ -281,7 +296,12 @@ export default function NewSubscription() {
         body: JSON.stringify({
           name,
           description,
-          customTables: useExistingPublication ? Array.from(selectedTablesFromPub) : selectedTables,
+          customTables: useExistingPublication 
+            ? Array.from(selectedTablesFromPub) 
+            : (!excludeMode ? selectedTables : undefined),
+          excludeTables: useExistingPublication 
+            ? undefined 
+            : (excludeMode ? selectedTables : undefined),
           dataCopy,
           useExistingPublication,
           existingPublicationNames: useExistingPublication ? selectedPublications : undefined,
@@ -473,11 +493,11 @@ export default function NewSubscription() {
                           </div>
                           <div className="mb-2 space-y-2">
                             <div className="flex gap-2">
-                              <input
-                                type="text"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder="Search tables..."
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search tables..."
                                 className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                               />
                               <button
@@ -525,10 +545,10 @@ export default function NewSubscription() {
                                 </p>
                               </div>
                             )}
-                          </div>
+            </div>
                           <div className="mb-2 flex gap-2">
-                            <button
-                              type="button"
+              <button
+                type="button"
                               onClick={() => {
                                 // Select all tables from selected publications
                                 const allTables = selectedPublications.flatMap(pubName => {
@@ -540,15 +560,15 @@ export default function NewSubscription() {
                               className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
                             >
                               Select All
-                            </button>
-                            <button
-                              type="button"
+              </button>
+              <button
+                type="button"
                               onClick={() => setSelectedTablesFromPub(new Set())}
                               className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-                            >
-                              Clear All
-                            </button>
-                          </div>
+              >
+                Clear All
+              </button>
+            </div>
                           <div className="max-h-64 overflow-y-auto border border-gray-200 rounded p-2 bg-white">
                             {selectedPublications.flatMap(pubName => {
                               const pub = existingPublications.find(p => p.name === pubName);
@@ -557,12 +577,12 @@ export default function NewSubscription() {
                                 t.toLowerCase().includes(searchQuery.toLowerCase())
                               );
                               return filtered.map(table => (
-                                <label
+                <label
                                   key={`${pubName}-${table}`}
                                   className="flex items-center p-1 rounded hover:bg-gray-50 cursor-pointer"
-                                >
-                                  <input
-                                    type="checkbox"
+                >
+                  <input
+                    type="checkbox"
                                     checked={selectedTablesFromPub.has(table)}
                                     onChange={(e) => {
                                       const newSet = new Set(selectedTablesFromPub);
@@ -573,11 +593,11 @@ export default function NewSubscription() {
                                       }
                                       setSelectedTablesFromPub(newSet);
                                     }}
-                                    className="mr-2"
-                                  />
+                    className="mr-2"
+                  />
                                   <span className="text-xs font-mono text-gray-700">{table}</span>
                                   <span className="text-xs text-gray-400 ml-2">({pubName})</span>
-                                </label>
+                </label>
                               ));
                             })}
                             {selectedPublications.flatMap(pubName => {
@@ -603,13 +623,35 @@ export default function NewSubscription() {
           {!useExistingPublication && (
             <div className="bg-white rounded-lg shadow p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                3. Select Tables ({selectedTables.length} selected)
+                3. Select Tables ({selectedTables.length} {excludeMode ? 'excluded' : 'selected'})
               </h2>
+              
+              {/* Exclude Mode Toggle */}
+              <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                <label className="flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={excludeMode}
+                    onChange={(e) => {
+                      setExcludeMode(e.target.checked);
+                      // Clear selection when switching modes
+                      setSelectedTables([]);
+                    }}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="ml-2 text-sm font-medium text-gray-700">
+                    Exclude mode (replicate all tables except selected)
+                  </span>
+                </label>
+                <p className="mt-1 ml-6 text-xs text-gray-500">
+                  When enabled, all tables will be replicated except the ones you select. Useful when you want to replicate most tables but exclude a few.
+                </p>
+              </div>
               
               {/* Search and Paste List */}
               <div className="mb-4 space-y-2">
                 <div className="flex gap-2">
-                  <input
+                <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -623,13 +665,13 @@ export default function NewSubscription() {
                   >
                     {showPasteList ? '✕ Hide' : '📋 Paste List'}
                   </button>
-                </div>
+            </div>
                 
                 {showPasteList && (
                   <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Paste table names (one per line, or comma/space separated):
-                    </label>
+                </label>
                     <textarea
                       value={pasteListText}
                       onChange={(e) => setPasteListText(e.target.value)}
@@ -658,6 +700,7 @@ export default function NewSubscription() {
                     </div>
                     <p className="mt-2 text-xs text-gray-500">
                       Supports newline, comma, or space-separated table names. Will match against available tables.
+                      {excludeMode && ' Tables you paste will be excluded from replication.'}
                     </p>
                   </div>
                 )}
@@ -756,7 +799,7 @@ export default function NewSubscription() {
                             onClick={() => toggleTable(table.table)}
                           >
                             <td className="px-4 py-2">
-                              <input
+                <input
                                 type="checkbox"
                                 checked={selectedTables.includes(table.table)}
                                 onChange={() => toggleTable(table.table)}

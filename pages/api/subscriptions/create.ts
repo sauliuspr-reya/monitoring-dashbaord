@@ -17,6 +17,7 @@ export default async function handler(
       sourceDbConnection,
       targetDbConnection,
       customTables, // Tables to replicate (when using existing publications, this is the selected subset)
+      excludeTables, // Tables to exclude (when creating new publication in exclude mode)
       dataCopy = false, // Whether to copy existing data
       useExistingPublication = false, // Whether to use an existing publication
       existingPublicationName, // Name of existing publication to use (deprecated, use existingPublicationNames)
@@ -71,9 +72,9 @@ export default async function handler(
     }
 
     // If using existing publication, we don't need customTables
-    // If creating new publication, we need customTables
-    if (!useExistingPublication && (!customTables || customTables.length === 0)) {
-      return res.status(400).json({ error: 'No tables selected for subscription' });
+    // If creating new publication, we need either customTables (include mode) or excludeTables (exclude mode)
+    if (!useExistingPublication && (!customTables || customTables.length === 0) && (!excludeTables || excludeTables.length === 0)) {
+      return res.status(400).json({ error: 'No tables selected for subscription. Please select tables to include or exclude.' });
     }
 
     // Support both old single publication and new multiple publications
@@ -89,7 +90,10 @@ export default async function handler(
       return res.status(400).json({ error: 'At least one table must be selected from the publications' });
     }
 
-    const tables = customTables || [];
+    // Determine tables to include based on mode
+    const tables = excludeTables && excludeTables.length > 0 
+      ? [] // In exclude mode, we'll create FOR ALL TABLES publication
+      : (customTables || []);
 
     // Generate names from subscription name (sanitize for SQL identifiers)
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
@@ -194,16 +198,53 @@ export default async function handler(
           SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
         `, [publicationName]);
 
-        const tableList = tables.map((t: string) => {
-          const escaped = t.replace(/"/g, '""');
-          return `"${escaped}"`;
-        }).join(', ');
-
         if (pubCheck.rows[0].count === '0') {
           // Step 2: Create publication on source
-          await sourcePool.query(`
-            CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
-          `);
+          if (excludeTables && excludeTables.length > 0) {
+            // In exclude mode, get all tables and remove excluded ones
+            const allTablesResult = await sourcePool.query(`
+              SELECT schemaname || '.' || tablename AS table_name
+              FROM pg_tables
+              WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              ORDER BY schemaname, tablename
+            `);
+            
+            const allTables = allTablesResult.rows.map((r: any) => r.table_name);
+            const excludedSet = new Set(excludeTables.map((t: string) => t.toLowerCase()));
+            const includedTables = allTables.filter((t: string) => !excludedSet.has(t.toLowerCase()));
+            
+            if (includedTables.length === 0) {
+              await sourcePool.end();
+              await targetPool.end();
+              return res.status(400).json({
+                error: 'No tables to replicate',
+                details: 'All tables are excluded. Please exclude fewer tables or use include mode.',
+              });
+            }
+            
+            // Create publication with included tables
+            const tableList = includedTables.map((t: string) => {
+              const escaped = t.replace(/"/g, '""');
+              return `"${escaped}"`;
+            }).join(', ');
+            await sourcePool.query(`
+              CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
+            `);
+          } else if (tables && tables.length > 0) {
+            // Create publication for specific tables
+            const tableList = tables.map((t: string) => {
+              const escaped = t.replace(/"/g, '""');
+              return `"${escaped}"`;
+            }).join(', ');
+            await sourcePool.query(`
+              CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
+            `);
+          } else {
+            // Fallback: create for all tables
+            await sourcePool.query(`
+              CREATE PUBLICATION ${escapedPubName} FOR ALL TABLES
+            `);
+          }
         } else {
           // Publication exists - check if all tables are in it
           const pubTablesResult = await sourcePool.query(`
