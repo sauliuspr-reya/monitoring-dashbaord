@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
@@ -6,16 +6,22 @@ import Navbar from '@/components/Navbar';
 export default function NewSubscription() {
   const router = useRouter();
   const [allTables, setAllTables] = useState<string[]>([]);
+  const [tableInfo, setTableInfo] = useState<Array<{
+    tableName: string;
+    table: string;
+    sourceRowCount: number;
+    sourceSize: number;
+    writersOnSource?: string[];
+  }>>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showPasteList, setShowPasteList] = useState(false);
+  const [pasteListText, setPasteListText] = useState('');
+  const [sortColumn, setSortColumn] = useState<'table' | 'rows' | 'size' | 'writers'>('table');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [sourceDbConnection, setSourceDbConnection] = useState('');
-  const [targetDbConnection, setTargetDbConnection] = useState('');
-  const [defaultSourceConnection, setDefaultSourceConnection] = useState('');
-  const [defaultTargetConnection, setDefaultTargetConnection] = useState('');
-  const [useCustomConnections, setUseCustomConnections] = useState(false);
   const [dataCopy, setDataCopy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,12 +29,13 @@ export default function NewSubscription() {
   const [existingPublications, setExistingPublications] = useState<Array<{name: string; tables: string[]; tableCount: number}>>([]);
   const [selectedPublications, setSelectedPublications] = useState<string[]>([]); // Support multiple publications
   const [selectedTablesFromPub, setSelectedTablesFromPub] = useState<Set<string>>(new Set()); // Selected tables from publications
+  const [showPasteListPub, setShowPasteListPub] = useState(false);
+  const [pasteListTextPub, setPasteListTextPub] = useState('');
   const [loadingPublications, setLoadingPublications] = useState(false);
-  const [loadingConnections, setLoadingConnections] = useState(false);
+
 
   useEffect(() => {
     loadTables();
-    loadConnectionStrings();
     loadPublications();
   }, []);
 
@@ -67,39 +74,22 @@ export default function NewSubscription() {
       const data = await res.json();
       const tables = (data.tables || []).map((t: any) => t.table || t.tableName).filter(Boolean);
       setAllTables(tables);
+      
+      // Store full table info for display
+      const fullTableInfo = (data.tables || []).map((t: any) => ({
+        tableName: t.tableName || t.table,
+        table: t.table || t.tableName,
+        sourceRowCount: t.sourceRowCount || 0,
+        sourceSize: t.sourceSize || 0,
+        writersOnSource: t.writersOnSource || [],
+      }));
+      setTableInfo(fullTableInfo);
+      
       setLoading(false);
     } catch (err: any) {
       console.error('Error loading tables:', err);
       setError(err.message);
       setLoading(false);
-    }
-  };
-
-  const loadConnectionStrings = async () => {
-    try {
-      setLoadingConnections(true);
-      const res = await fetch('/api/config/connections');
-      if (!res.ok) {
-        throw new Error('Failed to load connection strings');
-      }
-      const data = await res.json();
-      if (data.sourceDbConnection) {
-        setDefaultSourceConnection(data.sourceDbConnection);
-        if (!useCustomConnections) {
-          setSourceDbConnection(data.sourceDbConnection);
-        }
-      }
-      if (data.targetDbConnection) {
-        setDefaultTargetConnection(data.targetDbConnection);
-        if (!useCustomConnections) {
-          setTargetDbConnection(data.targetDbConnection);
-        }
-      }
-    } catch (err: any) {
-      console.error('Error loading connection strings:', err);
-      setError(`Failed to load default connection strings: ${err.message || 'Unknown error'}`);
-    } finally {
-      setLoadingConnections(false);
     }
   };
 
@@ -111,31 +101,178 @@ export default function NewSubscription() {
     );
   };
 
+  // Format helpers
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+  };
+
+  const formatNumber = (num: number) => {
+    if (num < 1000) return num.toString();
+    if (num < 1000000) return `${(num / 1000).toFixed(1)}k`;
+    return `${(num / 1000000).toFixed(1)}M`;
+  };
+
+  const getWriterCount = (writers?: string[]) => {
+    return writers?.length || 0;
+  };
+
+  // Parse table list from text (handles newlines, spaces, commas)
+  const parseTableList = (text: string): string[] => {
+    if (!text.trim()) return [];
+    const parts = text
+      .split(/[\n,\s]+/)
+      .map(part => part.trim())
+      .filter(part => part.length > 0);
+    return parts;
+  };
+
+  // Normalize table name for matching
+  const normalizeTableName = (name: string): string => {
+    return name
+      .replace(/^public\./i, '')
+      .replace(/^["']|["']$/g, '')
+      .toLowerCase()
+      .trim();
+  };
+
+  // Load tables from pasted text
+  const loadTablesFromPaste = () => {
+    const parsedNames = parseTableList(pasteListText);
+    if (parsedNames.length === 0) {
+      alert('No table names found in the pasted text');
+      return;
+    }
+
+    const matchedTables: string[] = [];
+    const notFound: string[] = [];
+
+    parsedNames.forEach(parsedName => {
+      const normalizedParsed = normalizeTableName(parsedName);
+      
+      // Try to find matching table
+      const found = tableInfo.find(table => {
+        const normalizedTable = normalizeTableName(table.table);
+        const normalizedTableName = normalizeTableName(table.tableName);
+        return normalizedTable === normalizedParsed || normalizedTableName === normalizedParsed;
+      });
+
+      if (found && !matchedTables.includes(found.table)) {
+        matchedTables.push(found.table);
+      } else if (!found) {
+        notFound.push(parsedName);
+      }
+    });
+
+    if (matchedTables.length > 0) {
+      setSelectedTables(matchedTables);
+      setPasteListText('');
+      setShowPasteList(false);
+      
+      if (notFound.length > 0) {
+        alert(`Loaded ${matchedTables.length} table(s). ${notFound.length} table(s) not found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+      } else {
+        alert(`Successfully loaded ${matchedTables.length} table(s)`);
+      }
+    } else {
+      alert(`No matching tables found. Please check the table names.\n\nNot found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+    }
+  };
+
+  // Filter and sort tables
+  const filteredTables = tableInfo.filter(table =>
+    table.table.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    table.tableName.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const sortedTables = [...filteredTables].sort((a, b) => {
+    let comparison = 0;
+    switch (sortColumn) {
+      case 'table':
+        comparison = a.table.localeCompare(b.table);
+        break;
+      case 'rows':
+        comparison = a.sourceRowCount - b.sourceRowCount;
+        break;
+      case 'size':
+        comparison = a.sourceSize - b.sourceSize;
+        break;
+      case 'writers':
+        comparison = getWriterCount(a.writersOnSource) - getWriterCount(b.writersOnSource);
+        break;
+    }
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
+
+  const handleSort = (column: typeof sortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+  };
+
+  const SortIcon = ({ column }: { column: typeof sortColumn }) => {
+    if (sortColumn !== column) return <span className="text-gray-400">↕</span>;
+    return sortDirection === 'asc' ? <span>↑</span> : <span>↓</span>;
+  };
+
+  // Load tables from pasted text for publication selection
+  const loadTablesFromPastePub = () => {
+    const parsedNames = parseTableList(pasteListTextPub);
+    if (parsedNames.length === 0) {
+      alert('No table names found in the pasted text');
+      return;
+    }
+
+    const matchedTables = new Set<string>();
+    const notFound: string[] = [];
+
+    // Get all tables from selected publications
+    const allPubTables = selectedPublications.flatMap(pubName => {
+      const pub = existingPublications.find(p => p.name === pubName);
+      return pub?.tables || [];
+    });
+
+    parsedNames.forEach(parsedName => {
+      const normalizedParsed = normalizeTableName(parsedName);
+      
+      // Try to find matching table in selected publications
+      const found = allPubTables.find(table => {
+        const normalizedTable = normalizeTableName(table);
+        return normalizedTable === normalizedParsed;
+      });
+
+      if (found) {
+        matchedTables.add(found);
+      } else {
+        notFound.push(parsedName);
+      }
+    });
+
+    if (matchedTables.size > 0) {
+      setSelectedTablesFromPub(matchedTables);
+      setPasteListTextPub('');
+      setShowPasteListPub(false);
+      
+      if (notFound.length > 0) {
+        alert(`Loaded ${matchedTables.size} table(s). ${notFound.length} table(s) not found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+      } else {
+        alert(`Successfully loaded ${matchedTables.size} table(s)`);
+      }
+    } else {
+      alert(`No matching tables found in selected publications. Please check the table names.\n\nNot found: ${notFound.slice(0, 10).join(', ')}${notFound.length > 10 ? '...' : ''}`);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setCreating(true);
-
-    // Use defaults if not using custom connections and fields are empty
-    const finalSourceConnection = useCustomConnections 
-      ? sourceDbConnection 
-      : (sourceDbConnection || defaultSourceConnection);
-    const finalTargetConnection = useCustomConnections 
-      ? targetDbConnection 
-      : (targetDbConnection || defaultTargetConnection);
-
-    // Validate connection strings
-    if (!finalSourceConnection || finalSourceConnection.trim() === '') {
-      setError('Source database connection string is required. Please set SOURCE_DATABASE_URL environment variable or provide a custom connection string.');
-      setCreating(false);
-      return;
-    }
-
-    if (!finalTargetConnection || finalTargetConnection.trim() === '') {
-      setError('Target database connection string is required. Please set TARGET_DATABASE_URL environment variable or provide a custom connection string.');
-      setCreating(false);
-      return;
-    }
 
     try {
       const res = await fetch('/api/subscriptions/create', {
@@ -144,8 +281,6 @@ export default function NewSubscription() {
         body: JSON.stringify({
           name,
           description,
-          sourceDbConnection: finalSourceConnection,
-          targetDbConnection: finalTargetConnection,
           customTables: useExistingPublication ? Array.from(selectedTablesFromPub) : selectedTables,
           dataCopy,
           useExistingPublication,
@@ -168,10 +303,6 @@ export default function NewSubscription() {
       setCreating(false);
     }
   };
-
-  const filteredTables = allTables.filter(table =>
-    table.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   if (loading) {
     return (
@@ -340,14 +471,60 @@ export default function NewSubscription() {
                           <div className="text-sm font-medium text-gray-900 mb-3">
                             Select Tables from Selected Publications ({selectedTablesFromPub.size} selected):
                           </div>
-                          <div className="mb-2">
-                            <input
-                              type="text"
-                              value={searchQuery}
-                              onChange={(e) => setSearchQuery(e.target.value)}
-                              placeholder="Search tables..."
-                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                            />
+                          <div className="mb-2 space-y-2">
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search tables..."
+                                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowPasteListPub(!showPasteListPub)}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                              >
+                                {showPasteListPub ? '✕ Hide' : '📋 Paste List'}
+                              </button>
+                            </div>
+                            
+                            {showPasteListPub && (
+                              <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Paste table names (one per line, or comma/space separated):
+                                </label>
+                                <textarea
+                                  value={pasteListTextPub}
+                                  onChange={(e) => setPasteListTextPub(e.target.value)}
+                                  placeholder={`AccountBalanceSeries\nAccountCollateralBalanceSeries\nAccountTotalBalanceSeries\n...`}
+                                  rows={6}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                                />
+                                <div className="mt-2 flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={loadTablesFromPastePub}
+                                    className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+                                  >
+                                    Load Tables
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPasteListTextPub('');
+                                      setShowPasteListPub(false);
+                                    }}
+                                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                                <p className="mt-2 text-xs text-gray-500">
+                                  Supports newline, comma, or space-separated table names. Will match against tables in selected publications.
+                                </p>
+                              </div>
+                            )}
                           </div>
                           <div className="mb-2 flex gap-2">
                             <button
@@ -428,165 +605,191 @@ export default function NewSubscription() {
               <h2 className="text-xl font-semibold text-gray-900 mb-4">
                 3. Select Tables ({selectedTables.length} selected)
               </h2>
-              <div className="mb-4">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search tables..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="mb-4 flex gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedTables([...filteredTables])}
-                className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-              >
-                Select All (Filtered)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedTables([])}
-                className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-              >
-                Clear All
-              </button>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-96 overflow-y-auto">
-              {filteredTables.map((table) => (
-                <label
-                  key={table}
-                  className="flex items-center p-2 rounded hover:bg-gray-50 cursor-pointer"
-                >
+              
+              {/* Search and Paste List */}
+              <div className="mb-4 space-y-2">
+                <div className="flex gap-2">
                   <input
-                    type="checkbox"
-                    checked={selectedTables.includes(table)}
-                    onChange={() => toggleTable(table)}
-                    className="mr-2"
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search tables..."
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <span className="text-sm text-gray-700 font-mono">{table}</span>
-                </label>
-              ))}
-              {filteredTables.length === 0 && (
-                <div className="col-span-full text-center py-8 text-gray-500">
-                  {loading ? 'Loading tables...' : 'No tables found'}
+                  <button
+                    type="button"
+                    onClick={() => setShowPasteList(!showPasteList)}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                  >
+                    {showPasteList ? '✕ Hide' : '📋 Paste List'}
+                  </button>
                 </div>
-              )}
-            </div>
-          </div>
-          )}
-
-          {/* Connection Strings */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold text-gray-900">
-                {useExistingPublication ? '3. Database Connections' : '4. Database Connections'}
-              </h2>
-              <button
-                type="button"
-                onClick={loadConnectionStrings}
-                disabled={loadingConnections}
-                className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed flex items-center gap-2"
-              >
-                {loadingConnections ? (
-                  <>
-                    <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600"></span>
-                    Loading...
-                  </>
-                ) : (
-                  <>
-                    ↻ Reload Defaults
-                  </>
+                
+                {showPasteList && (
+                  <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Paste table names (one per line, or comma/space separated):
+                    </label>
+                    <textarea
+                      value={pasteListText}
+                      onChange={(e) => setPasteListText(e.target.value)}
+                      placeholder={`AccountBalanceSeries\nAccountCollateralBalanceSeries\nAccountTotalBalanceSeries\n...`}
+                      rows={6}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    />
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={loadTablesFromPaste}
+                        className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors"
+                      >
+                        Load Tables
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPasteListText('');
+                          setShowPasteList(false);
+                        }}
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <p className="mt-2 text-xs text-gray-500">
+                      Supports newline, comma, or space-separated table names. Will match against available tables.
+                    </p>
+                  </div>
                 )}
-              </button>
-            </div>
-            <div className="mb-4">
-              <label className="flex items-center">
-                <input
-                  type="checkbox"
-                  checked={useCustomConnections}
-                  onChange={(e) => {
-                    setUseCustomConnections(e.target.checked);
-                    if (!e.target.checked) {
-                      // Reset to defaults - reload if not already loaded
-                      if (!defaultSourceConnection && !defaultTargetConnection) {
-                        loadConnectionStrings();
-                      } else {
-                        setSourceDbConnection(defaultSourceConnection);
-                        setTargetDbConnection(defaultTargetConnection);
-                      }
-                    }
-                  }}
-                  className="mr-2"
-                />
-                <span className="text-sm text-gray-700">
-                  Use custom connection strings (defaults from environment variables or K8s secrets)
+              </div>
+
+              {/* Table Selection Controls */}
+              <div className="mb-3 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedTables(sortedTables.map(t => t.table))}
+                  className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                >
+                  Select All
+                </button>
+                {selectedTables.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTables([])}
+                    className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50"
+                  >
+                    Deselect All
+                  </button>
+                )}
+                <div className="flex-1"></div>
+                <span className="text-xs text-gray-500 self-center">
+                  {sortedTables.length} table{sortedTables.length !== 1 ? 's' : ''}
                 </span>
-              </label>
-              {!useCustomConnections && (defaultSourceConnection || defaultTargetConnection) && (
-                <p className="mt-2 text-xs text-gray-500 ml-6">
-                  Using default connections. Click &quot;Reload Defaults&quot; to refresh from environment variables or K8s secrets.
-                </p>
-              )}
-              {!useCustomConnections && !defaultSourceConnection && !defaultTargetConnection && (
-                <p className="mt-2 text-xs text-yellow-600 ml-6">
-                  ⚠ No default connections found. Click &quot;Reload Defaults&quot; to try loading from environment variables or K8s secrets.
-                </p>
-              )}
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Source Database (RDS) Connection String *
-                  {!useCustomConnections && defaultSourceConnection && (
-                    <span className="text-gray-500 ml-1">(using SOURCE_DATABASE_URL)</span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  value={sourceDbConnection}
-                  onChange={(e) => setSourceDbConnection(e.target.value)}
-                  required
-                  disabled={!useCustomConnections && !!defaultSourceConnection}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  placeholder={defaultSourceConnection ? "Using SOURCE_DATABASE_URL from environment" : "postgresql://user:password@host:port/database"}
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  {!useCustomConnections && defaultSourceConnection
-                    ? 'Using default connection from environment variables'
-                    : 'Password will be hidden for security'}
-                </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Target Database (Cloud SQL) Connection String *
-                  {!useCustomConnections && defaultTargetConnection && (
-                    <span className="text-gray-500 ml-1">(using TARGET_DATABASE_URL)</span>
-                  )}
-                </label>
-                <input
-                  type="password"
-                  value={targetDbConnection}
-                  onChange={(e) => setTargetDbConnection(e.target.value)}
-                  required
-                  disabled={!useCustomConnections && !!defaultTargetConnection}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm disabled:bg-gray-100 disabled:cursor-not-allowed"
-                  placeholder={defaultTargetConnection ? "Using TARGET_DATABASE_URL from environment" : "postgresql://user:password@host:port/database"}
-                />
-                <p className="mt-1 text-xs text-gray-500">
-                  {!useCustomConnections && defaultTargetConnection
-                    ? 'Using default connection from environment variables'
-                    : 'Password will be hidden for security'}
-                </p>
+
+              {/* Tables Table */}
+              <div className="border border-gray-200 rounded-lg overflow-hidden">
+                <div className="overflow-x-auto" style={{ maxHeight: '60vh' }}>
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="px-4 py-2 w-12">
+                          <input
+                            type="checkbox"
+                            checked={sortedTables.length > 0 && sortedTables.every(t => selectedTables.includes(t.table))}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedTables(sortedTables.map(t => t.table));
+                              } else {
+                                setSelectedTables([]);
+                              }
+                            }}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                          />
+                        </th>
+                        <th 
+                          className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                          onClick={() => handleSort('table')}
+                        >
+                          Table <SortIcon column="table" />
+                        </th>
+                        <th 
+                          className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                          onClick={() => handleSort('rows')}
+                        >
+                          Rows <SortIcon column="rows" />
+                        </th>
+                        <th 
+                          className="px-4 py-2 text-right text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                          onClick={() => handleSort('size')}
+                        >
+                          Size <SortIcon column="size" />
+                        </th>
+                        <th 
+                          className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase cursor-pointer hover:bg-gray-100 select-none"
+                          onClick={() => handleSort('writers')}
+                        >
+                          Writers <SortIcon column="writers" />
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {loading ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                            Loading tables...
+                          </td>
+                        </tr>
+                      ) : sortedTables.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                            No tables found
+                          </td>
+                        </tr>
+                      ) : (
+                        sortedTables.map((table) => (
+                          <tr
+                            key={table.tableName}
+                            className={`hover:bg-gray-50 cursor-pointer ${
+                              selectedTables.includes(table.table) ? 'bg-blue-50' : ''
+                            }`}
+                            onClick={() => toggleTable(table.table)}
+                          >
+                            <td className="px-4 py-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedTables.includes(table.table)}
+                                onChange={() => toggleTable(table.table)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                            </td>
+                            <td className="px-4 py-2 text-sm font-mono text-gray-900">
+                              {table.table}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-gray-600 text-right">
+                              {formatNumber(table.sourceRowCount)}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-gray-600 text-right">
+                              {formatBytes(table.sourceSize)}
+                            </td>
+                            <td className="px-4 py-2 text-sm text-gray-600">
+                              {getWriterCount(table.writersOnSource)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Data Copy Option */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              {useExistingPublication ? '4. Replication Settings' : '5. Replication Settings'}
+              {useExistingPublication ? '3. Replication Settings' : '4. Replication Settings'}
             </h2>
             <div className="space-y-4">
               <div>
