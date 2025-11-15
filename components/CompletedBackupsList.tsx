@@ -14,7 +14,7 @@ interface BackupInfo {
 interface CompletedBackupsListProps {
   backups: BackupInfo[];
   loading: boolean;
-  onRestore: (filename: string) => void;
+  onRestore: (filename: string, cleanRestore?: boolean) => void;
   restoring: { [key: string]: boolean };
   formatBytes: (bytes: number) => string;
 }
@@ -73,23 +73,22 @@ export default function CompletedBackupsList({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'all' | 'healthy' | 'failed'>('all');
   const [targetDbInfo, setTargetDbInfo] = useState<{ host: string; database: string; user: string; display: string } | null>(null);
+  const [cleanRestore, setCleanRestore] = useState(false);
 
   // Fetch target database connection info
   useEffect(() => {
-    if (!targetDbInfo) {
-      fetch('/api/config/connections')
-        .then(res => res.json())
-        .then(data => {
-          if (data.targetDbConnection) {
-            const info = parseDbConnectionInfo(data.targetDbConnection);
-            setTargetDbInfo(info);
-          }
-        })
-        .catch(err => {
-          console.error('Failed to fetch target database info:', err);
-        });
-    }
-  }, [targetDbInfo]);
+    fetch('/api/config/connections')
+      .then(res => res.json())
+      .then(data => {
+        if (data.targetDbConnection) {
+          const info = parseDbConnectionInfo(data.targetDbConnection);
+          setTargetDbInfo(info);
+        }
+      })
+      .catch(err => {
+        console.error('Failed to fetch target database info:', err);
+      });
+  }, []); // Fetch once on mount
 
   const healthyBackups = backups.filter(b => b.exists !== false && b.size > 0);
   const failedBackups = backups.filter(b => b.exists === false || b.size === 0);
@@ -166,6 +165,36 @@ export default function CompletedBackupsList({
               </span>
             </button>
           </nav>
+        </div>
+
+        {/* Clean Restore Option */}
+        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <div className="flex items-start">
+            <input
+              type="checkbox"
+              id="cleanRestoreCompleted"
+              checked={cleanRestore}
+              onChange={(e) => setCleanRestore(e.target.checked)}
+              className="mt-1 mr-3 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            />
+            <div className="flex-1">
+              <label htmlFor="cleanRestoreCompleted" className="text-sm font-medium text-gray-900 cursor-pointer">
+                Clean Restore (Truncate/Drop existing data)
+              </label>
+              <p className="text-xs text-gray-600 mt-1">
+                {cleanRestore ? (
+                  <>
+                    <strong>Enabled:</strong> Existing tables will be truncated (plain SQL) or dropped (custom format) before restore.
+                    This ensures a clean restore with no duplicate data.
+                  </>
+                ) : (
+                  <>
+                    <strong>Disabled:</strong> Data will be restored on top of existing data. This may cause conflicts or duplicates.
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Search */}
@@ -284,19 +313,30 @@ export default function CompletedBackupsList({
                           ? `\n\nTarget Database: ${targetDbInfo.display}`
                           : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
                         
-                        const confirmMsg = `⚠️ RESTORE OPERATION ⚠️\n\n` +
-                          `You are about to restore backup:\n` +
-                          `  ${backup.filename}\n` +
-                          `  Size: ${formatBytes(backup.size)}\n` +
-                          `${dbInfo}\n\n` +
-                          `WARNING:\n` +
-                          `  • This will restore data on top of existing tables\n` +
-                          `  • This may cause duplicates or conflicts\n` +
-                          `  • Use the Restore Modal for "Clean Restore" option\n\n` +
-                          `Are you sure you want to proceed?`;
+                        const confirmMsg = cleanRestore
+                          ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
+                            `You are about to restore backup:\n` +
+                            `  ${backup.filename}\n` +
+                            `  Size: ${formatBytes(backup.size)}\n` +
+                            `${dbInfo}\n\n` +
+                            `CLEAN RESTORE MODE:\n` +
+                            `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                            `  • All existing data will be PERMANENTLY DELETED\n` +
+                            `  • This action CANNOT be undone\n\n` +
+                            `Are you absolutely sure you want to proceed?`
+                          : `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                            `You are about to restore backup:\n` +
+                            `  ${backup.filename}\n` +
+                            `  Size: ${formatBytes(backup.size)}\n` +
+                            `${dbInfo}\n\n` +
+                            `REGULAR RESTORE MODE:\n` +
+                            `  • Data will be restored on top of existing tables\n` +
+                            `  • This may cause duplicates or conflicts\n` +
+                            `  • Consider using "Clean Restore" for a fresh restore\n\n` +
+                            `Are you sure you want to proceed?`;
                         
                         if (confirm(confirmMsg)) {
-                          onRestore(backup.filename);
+                          onRestore(backup.filename, cleanRestore);
                         }
                       }}
                       disabled={restoring[backup.filename] || backup.exists === false}
