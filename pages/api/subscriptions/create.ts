@@ -298,7 +298,125 @@ export default async function handler(
         console.warn(`Replication slot '${slotName}' already exists on source. Will use existing slot.`);
       }
 
-      // Step 5: Create subscription on target
+      // Step 5: Validate that tables exist on target database
+      // PostgreSQL requires tables to exist on subscriber before creating subscription
+      let tablesToCheck: string[] = [];
+      
+      if (useExistingPublication) {
+        // Get all tables from selected publications
+        for (const pubName of publicationNames) {
+          const pubTablesResult = await sourcePool.query(`
+            SELECT schemaname || '.' || tablename AS table_name
+            FROM pg_publication_tables
+            WHERE pubname = $1
+          `, [pubName]);
+          const pubTables = pubTablesResult.rows.map((r: any) => r.table_name);
+          tablesToCheck.push(...pubTables);
+        }
+        
+        // If customTables are provided, only check those
+        if (customTables && customTables.length > 0) {
+          tablesToCheck = customTables;
+        }
+      } else {
+        // For new publication, check the tables we're creating it for
+        if (excludeTables && excludeTables.length > 0) {
+          // In exclude mode, we need to get all tables first
+          const allTablesResult = await sourcePool.query(`
+            SELECT schemaname || '.' || tablename AS table_name
+            FROM pg_tables
+            WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+            ORDER BY schemaname, tablename
+          `);
+          const allTables = allTablesResult.rows.map((r: any) => r.table_name);
+          tablesToCheck = allTables.filter((t: string) => !excludeTables.includes(t));
+        } else if (tables && tables.length > 0) {
+          tablesToCheck = tables;
+        }
+      }
+      
+      // Remove duplicates
+      tablesToCheck = [...new Set(tablesToCheck)];
+      
+      // Check which tables exist on target
+      if (tablesToCheck.length > 0) {
+        const missingTables: string[] = [];
+        const emptyTables: string[] = [];
+        
+        for (const table of tablesToCheck) {
+          // Parse schema.table format
+          const [schema, tableName] = table.includes('.') 
+            ? table.split('.', 2) 
+            : ['public', table];
+          
+          const cleanTableName = tableName.replace(/^"|"$/g, '');
+          
+          // Check if table exists
+          const checkResult = await targetPool.query(`
+            SELECT COUNT(*) as count
+            FROM information_schema.tables
+            WHERE table_schema = $1 AND table_name = $2
+          `, [schema, cleanTableName]);
+          
+          if (checkResult.rows[0].count === '0') {
+            missingTables.push(table);
+          } else if (dataCopy === false) {
+            // If copy_data = false, check if table has data (baseline should be restored)
+            // Use fast estimate (reltuples) to avoid slow COUNT(*) on large tables
+            try {
+              const rowCountResult = await targetPool.query(`
+                SELECT COALESCE(reltuples::bigint, 0) as estimate
+                FROM pg_class
+                WHERE relname = $1 
+                  AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+              `, [cleanTableName, schema]);
+              
+              const rowEstimate = parseInt(rowCountResult.rows[0]?.estimate || '0', 10);
+              
+              // If table exists but has no data and copy_data = false, warn user
+              if (rowEstimate === 0) {
+                // Double-check with actual count for small tables (more accurate)
+                const actualCountResult = await targetPool.query(`
+                  SELECT COUNT(*) as count
+                  FROM ${schema === 'public' ? `"${cleanTableName}"` : `${schema}."${cleanTableName}"`}
+                `).catch(() => ({ rows: [{ count: '0' }] }));
+                
+                const actualCount = parseInt(actualCountResult.rows[0]?.count || '0', 10);
+                if (actualCount === 0) {
+                  emptyTables.push(table);
+                }
+              }
+            } catch (err) {
+              // If we can't check row count, continue (table exists, that's the main requirement)
+              console.warn(`Could not check row count for table ${table}:`, err);
+            }
+          }
+        }
+        
+        if (missingTables.length > 0) {
+          await sourcePool.end();
+          await targetPool.end();
+          return res.status(400).json({
+            error: 'Tables do not exist on target database',
+            details: `The following tables from the publication do not exist on the target database: ${missingTables.join(', ')}`,
+            hint: 'Before creating a subscription, you must restore a baseline backup (schema + data) to the target database. This ensures the target has the same schema and initial data as the source at the backup point.',
+            missingTables: missingTables,
+            workflow: [
+              '1. Create a backup from source (with replication slot if needed)',
+              '2. Restore the backup to target database',
+              '3. Create subscription with copy_data = false (data already copied)',
+            ],
+          });
+        }
+        
+        // Warn if tables exist but are empty and copy_data = false
+        if (emptyTables.length > 0 && dataCopy === false) {
+          console.warn(`Warning: ${emptyTables.length} tables exist but are empty. Baseline backup may not have been restored.`);
+          // Don't fail, but log warning - user might intentionally have empty tables
+        }
+      }
+
+      // Step 6: Create subscription on target
       // Parse source connection for subscription connection string
       // Handle both URL format and connection string format
       let connString: string;
@@ -352,7 +470,7 @@ export default async function handler(
         )
       `);
 
-      // Step 6: Save to monitoring database
+      // Step 7: Save to monitoring database
       const monitoringPool = getDbPool();
       const result = await monitoringPool.query(`
         INSERT INTO subscriptions (

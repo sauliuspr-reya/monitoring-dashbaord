@@ -550,81 +550,161 @@ export class BackupTaskStreamingService extends BackupTaskService {
           childProcess = psql;
         } else {
           // For plain SQL, we need to handle clean restore differently
-          // If clean restore is requested, we'll truncate tables before restore
+          // If clean restore is requested, we'll DROP tables before restore (not just truncate)
+          // because SQL dumps contain CREATE TABLE statements that will conflict if tables exist
           if (cleanRestore) {
             // First, get list of tables from the backup file
-            // We'll extract table names and truncate them before restore
+            // We'll extract table names and drop them before restore
             stdoutLineCount++;
-            await taskLoggerService.appendLog(taskId, 'stdout', 'Clean restore requested: will truncate tables before restore', stdoutLineCount).catch(() => {});
+            await taskLoggerService.appendLog(taskId, 'stdout', 'Clean restore requested: will DROP tables before restore', stdoutLineCount).catch(() => {});
             
-            // Extract table names from backup file (look for COPY statements)
+            // Extract table names from backup file (look for CREATE TABLE and COPY statements)
+            // For very large files, we'll read in chunks to avoid memory issues
             try {
-              const backupContent = await fs.readFile(task.filepath, 'utf-8');
-              const tableMatches = backupContent.match(/^COPY\s+(?:public\.)?([^\s(]+)/gm) || [];
-              const tables = [...new Set(tableMatches.map(m => m.replace(/^COPY\s+(?:public\.)?/, '').replace(/"/g, '')))];
+              let backupContent: string;
+              const fileStats = await fs.stat(task.filepath);
+              const fileSizeMB = fileStats.size / (1024 * 1024);
+              
+              // For files larger than 500MB, read only the first 100MB (should contain all CREATE TABLE statements)
+              if (fileSizeMB > 500) {
+                stdoutLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stdout', `Large backup file (${fileSizeMB.toFixed(1)} MB), reading header for table extraction...`, stdoutLineCount).catch(() => {});
+                const fileHandle = await fs.open(task.filepath, 'r');
+                const buffer = Buffer.alloc(100 * 1024 * 1024); // Read first 100MB
+                await fileHandle.read(buffer, 0, buffer.length, 0);
+                await fileHandle.close();
+                backupContent = buffer.toString('utf-8');
+              } else {
+                backupContent = await fs.readFile(task.filepath, 'utf-8');
+              }
+              
+              // Get tables from CREATE TABLE statements (more reliable)
+              const createTableMatches = backupContent.match(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:public\.)?([^\s(]+)/gim) || [];
+              // Also get from COPY statements (for data-only dumps)
+              const copyMatches = backupContent.match(/^COPY\s+(?:public\.)?([^\s(]+)/gm) || [];
+              
+              // Combine and deduplicate
+              const allMatches = [...createTableMatches, ...copyMatches];
+              const tables = [...new Set(allMatches.map(m => {
+                // Extract table name, handling both CREATE TABLE and COPY formats
+                let tableName = m.replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:public\.)?/i, '')
+                                 .replace(/^COPY\s+(?:public\.)?/i, '')
+                                 .replace(/"/g, '')
+                                 .trim();
+                // Remove schema prefix if present
+                if (tableName.includes('.')) {
+                  tableName = tableName.split('.').pop() || tableName;
+                }
+                return tableName;
+              }))];
               
               if (tables.length > 0) {
                 stdoutLineCount++;
-                await taskLoggerService.appendLog(taskId, 'stdout', `Found ${tables.length} tables to truncate`, stdoutLineCount).catch(() => {});
+                await taskLoggerService.appendLog(taskId, 'stdout', `Found ${tables.length} tables to drop`, stdoutLineCount).catch(() => {});
                 
-                // Build TRUNCATE command
-                const quotedTables = tables.map(t => {
-                  // Handle quoted identifiers
-                  if (t.includes('"')) {
-                    return t;
-                  }
+                // Build DROP commands for tables, sequences, and related objects
+                // DROP TABLE CASCADE will also drop sequences, indexes, constraints, etc.
+                const dropCommands = tables.map(t => {
+                  // For mixed-case or special characters, we need to quote
+                  const cleanTable = t.replace(/^"|"$/g, '');
                   // Quote if contains uppercase or special chars
-                  if (t !== t.toLowerCase() || /[^a-z0-9_]/.test(t)) {
-                    return `"${t}"`;
+                  if (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable)) {
+                    const quotedTable = `"${cleanTable.replace(/"/g, '""')}"`;
+                    return `DROP TABLE IF EXISTS public.${quotedTable} CASCADE;`;
                   }
-                  return t;
-                }).join(', ');
+                  return `DROP TABLE IF EXISTS public.${cleanTable} CASCADE;`;
+                }).join('\n');
                 
-                const truncateSQL = `TRUNCATE TABLE ${quotedTables} CASCADE;`;
+                // Also drop sequences that might exist independently
+                // Sequences are typically named {table}_id_seq or {table}_{column}_seq
+                const sequenceCommands = tables.map(t => {
+                  const cleanTable = t.replace(/^"|"$/g, '');
+                  if (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable)) {
+                    const quotedTable = `"${cleanTable.replace(/"/g, '""')}"`;
+                    return `DROP SEQUENCE IF EXISTS public.${quotedTable}_id_seq CASCADE;`;
+                  }
+                  return `DROP SEQUENCE IF EXISTS public.${cleanTable}_id_seq CASCADE;`;
+                }).join('\n');
                 
-                // Execute truncate via psql
-                const truncateArgs = [
+                const allDropCommands = dropCommands + '\n' + sequenceCommands;
+                
+                // Execute drop via psql
+                // Use -f - to read from stdin for large command strings
+                const dropArgs = [
                   '-h', conn.host,
                   '-p', conn.port.toString(),
                   '-U', conn.user,
                   '-d', conn.database,
-                  '-c', truncateSQL,
                 ];
                 
-                stdoutLineCount++;
-                await taskLoggerService.appendLog(taskId, 'stdout', 'Truncating tables...', stdoutLineCount).catch(() => {});
+                // For very large command strings, use stdin instead of -c
+                const useStdin = allDropCommands.length > 100000; // ~100KB limit for -c
                 
-                const truncateProcess = spawn('psql', truncateArgs, {
+                if (!useStdin) {
+                  // Add -c flag for smaller command strings
+                  dropArgs.push('-c', allDropCommands);
+                } else {
+                  // Use -f - to read from stdin
+                  dropArgs.push('-f', '-');
+                }
+                
+                stdoutLineCount++;
+                await taskLoggerService.appendLog(taskId, 'stdout', `Dropping ${tables.length} existing tables and sequences...`, stdoutLineCount).catch(() => {});
+                
+                const dropProcess = spawn('psql', dropArgs, {
                   env: {
                     ...process.env,
                     PGPASSWORD: conn.password,
                   },
-                  stdio: ['ignore', 'pipe', 'pipe'],
+                  stdio: useStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
                 });
                 
-                // Wait for truncate to complete
+                // If using stdin, write the commands
+                if (useStdin && dropProcess.stdin) {
+                  dropProcess.stdin.write(allDropCommands);
+                  dropProcess.stdin.end();
+                }
+                
+                // Capture drop output
+                dropProcess.stdout?.on('data', async (data: Buffer) => {
+                  const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
+                  for (const line of lines) {
+                    stdoutLineCount++;
+                    await taskLoggerService.appendLog(taskId, 'stdout', `[DROP] ${line}`, stdoutLineCount).catch(() => {});
+                  }
+                });
+                
+                dropProcess.stderr?.on('data', async (data: Buffer) => {
+                  const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
+                  for (const line of lines) {
+                    stderrLineCount++;
+                    await taskLoggerService.appendLog(taskId, 'stderr', `[DROP] ${line}`, stderrLineCount).catch(() => {});
+                  }
+                });
+                
+                // Wait for drop to complete
                 await new Promise<void>((resolve, reject) => {
-                  truncateProcess.on('close', (code) => {
+                  dropProcess.on('close', (code) => {
                     if (code === 0) {
                       stdoutLineCount++;
-                      taskLoggerService.appendLog(taskId, 'stdout', '✓ Tables truncated successfully', stdoutLineCount).catch(() => {});
+                      taskLoggerService.appendLog(taskId, 'stdout', '✓ Tables dropped successfully', stdoutLineCount).catch(() => {});
                       resolve();
                     } else {
                       stderrLineCount++;
-                      taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate completed with code ${code} (continuing with restore)`, stderrLineCount).catch(() => {});
-                      resolve(); // Continue anyway
+                      taskLoggerService.appendLog(taskId, 'stderr', `⚠ Drop completed with code ${code} (continuing with restore)`, stderrLineCount).catch(() => {});
+                      resolve(); // Continue anyway - some tables might not exist
                     }
                   });
-                  truncateProcess.on('error', (err) => {
+                  dropProcess.on('error', (err) => {
                     stderrLineCount++;
-                    taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate error: ${err.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+                    taskLoggerService.appendLog(taskId, 'stderr', `⚠ Drop error: ${err.message} (continuing with restore)`, stderrLineCount).catch(() => {});
                     resolve(); // Continue anyway
                   });
                 });
               }
             } catch (error: any) {
               stderrLineCount++;
-              await taskLoggerService.appendLog(taskId, 'stderr', `⚠ Could not extract table names for truncate: ${error.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+              await taskLoggerService.appendLog(taskId, 'stderr', `⚠ Could not extract table names for drop: ${error.message} (continuing with restore)`, stderrLineCount).catch(() => {});
             }
           }
           

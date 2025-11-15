@@ -312,7 +312,24 @@ export default function NewSubscription() {
 
       if (!res.ok) {
         // Show detailed error message if available
-        const errorMsg = data.details || data.hint || data.error || 'Failed to create subscription';
+        let errorMsg = data.error || 'Failed to create subscription';
+        
+        if (data.details) {
+          errorMsg += `\n\n${data.details}`;
+        }
+        
+        if (data.hint) {
+          errorMsg += `\n\n💡 ${data.hint}`;
+        }
+        
+        if (data.workflow && Array.isArray(data.workflow)) {
+          errorMsg += `\n\n📋 Recommended Workflow:\n${data.workflow.map((step: string, i: number) => `   ${step}`).join('\n')}`;
+        }
+        
+        if (data.missingTables && Array.isArray(data.missingTables)) {
+          errorMsg += `\n\n❌ Missing Tables (${data.missingTables.length}):\n   ${data.missingTables.slice(0, 10).join(', ')}${data.missingTables.length > 10 ? ` ... and ${data.missingTables.length - 10} more` : ''}`;
+        }
+        
         throw new Error(errorMsg);
       }
 
@@ -829,6 +846,44 @@ export default function NewSubscription() {
             </div>
           )}
 
+          {/* Baseline Backup Warning */}
+          <div className="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-4 mb-6">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-yellow-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3 flex-1">
+                <h3 className="text-sm font-medium text-yellow-800">
+                  ⚠️ Baseline Backup Required
+                </h3>
+                <div className="mt-2 text-sm text-yellow-700">
+                  <p className="mb-2">
+                    <strong>Before creating a subscription, you must restore a baseline backup to the target database.</strong>
+                  </p>
+                  <p className="mb-2">This ensures:</p>
+                  <ul className="list-disc list-inside ml-2 space-y-1">
+                    <li>Tables exist on target (schema + data)</li>
+                    <li>Target has the same initial state as source at backup point</li>
+                    <li>Subscription can start replicating changes from the correct LSN</li>
+                  </ul>
+                  <p className="mt-3 font-medium">Recommended Workflow:</p>
+                  <ol className="list-decimal list-inside ml-2 space-y-1 mt-1">
+                    <li>Create backup from source (with replication slot if needed)</li>
+                    <li>Restore the backup to target database</li>
+                    <li>Create subscription with <code className="bg-yellow-100 px-1 rounded">copy_data = false</code> (data already copied)</li>
+                  </ol>
+                  <p className="mt-3">
+                    <Link href="/backup" className="text-yellow-800 underline font-medium">
+                      Go to Backup & Restore →
+                    </Link>
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Data Copy Option */}
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
@@ -848,8 +903,18 @@ export default function NewSubscription() {
                   </span>
                 </label>
                 <p className="mt-1 text-xs text-gray-500 ml-6">
-                  When enabled, PostgreSQL will copy existing data from the source to the target during subscription creation.
-                  When disabled (default), only new changes will be replicated.
+                  {dataCopy ? (
+                    <>
+                      <strong>Enabled:</strong> PostgreSQL will copy existing data from source to target during subscription creation.
+                      <span className="block mt-1 text-yellow-700">
+                        ⚠️ Only use this if you haven&apos;t restored a baseline backup. If you&apos;ve already restored a backup, keep this disabled.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <strong>Disabled (Recommended):</strong> Only new changes will be replicated. Use this when you&apos;ve already restored a baseline backup to the target.
+                    </>
+                  )}
                 </p>
                 <div className="mt-2 ml-6">
                   <span className={`inline-block px-2 py-1 text-xs rounded ${
