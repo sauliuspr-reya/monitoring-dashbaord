@@ -35,7 +35,7 @@ interface ReplicationStatusProps {
 export default function ReplicationStatus({
   subscriptionId,
   autoRefresh = true,
-  refreshInterval = 15000,
+  refreshInterval = 300000, // Default: 5 minutes (300000ms) instead of 15 seconds
   defaultTimeRange = '1h'
 }: ReplicationStatusProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -43,6 +43,7 @@ export default function ReplicationStatus({
   const [loading, setLoading] = useState(true);
   const [loadingTables, setLoadingTables] = useState(true);
   const [loadingLogs, setLoadingLogs] = useState(true);
+  const [refreshing, setRefreshing] = useState(false); // Track background refresh (don't show loading)
   const [error, setError] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
@@ -51,22 +52,60 @@ export default function ReplicationStatus({
   const [rateOfChangeTimeframe, setRateOfChangeTimeframe] = useState<string>('1h');
   const [activeTab, setActiveTab] = useState<'overview' | 'tables' | 'logs'>('overview');
 
-  const loadData = async () => {
+  const loadData = async (isBackgroundRefresh: boolean = false) => {
+    // Add timeout to prevent infinite loading (60 seconds max)
+    const timeoutId = setTimeout(() => {
+      if (!isBackgroundRefresh) {
+        console.error('[ReplicationStatus] Request timeout after 60 seconds');
+        setError('Request timed out. The database may be slow or overloaded.');
+        setLoading(false);
+        setLoadingLogs(false);
+        setLoadingTables(false);
+      }
+      setRefreshing(false);
+    }, 60000);
+
     try {
-      setError(null);
-      setLoadingLogs(true);
-      setLoadingTables(true);
+      // Only show loading state on initial load, not background refreshes
+      if (!isBackgroundRefresh) {
+        setError(null);
+        setLoadingLogs(true);
+        setLoadingTables(true);
+      } else {
+        setRefreshing(true);
+      }
       
       // Load logs and tables in parallel
+      // Use current timeframe value (may have changed since component render)
+      const currentTimeframe = rateOfChangeTimeframe;
+      
+      // Create abort controllers for timeout
+      const logsAbortController = new AbortController();
+      const tablesAbortController = new AbortController();
+      const logsTimeout = setTimeout(() => logsAbortController.abort(), 55000);
+      const tablesTimeout = setTimeout(() => tablesAbortController.abort(), 55000);
+      
       const [logsRes, tablesRes] = await Promise.all([
-        fetch(`/api/subscriptions/${subscriptionId}/logs`).catch((err) => {
-          console.error('[ReplicationStatus] Failed to load logs:', err);
+        fetch(`/api/subscriptions/${subscriptionId}/logs`, {
+          signal: logsAbortController.signal,
+        }).catch((err) => {
+          if (err.name === 'AbortError') {
+            console.error('[ReplicationStatus] Logs request timed out after 55 seconds');
+          } else {
+            console.error('[ReplicationStatus] Failed to load logs:', err);
+          }
           return null;
-        }),
-        fetch(`/api/subscriptions/${subscriptionId}/tables?timeframe=${rateOfChangeTimeframe}`).catch((err) => {
-          console.error('[ReplicationStatus] Failed to load tables:', err);
+        }).finally(() => clearTimeout(logsTimeout)),
+        fetch(`/api/subscriptions/${subscriptionId}/tables?timeframe=${currentTimeframe}`, {
+          signal: tablesAbortController.signal,
+        }).catch((err) => {
+          if (err.name === 'AbortError') {
+            console.error('[ReplicationStatus] Tables request timed out after 55 seconds');
+          } else {
+            console.error('[ReplicationStatus] Failed to load tables:', err);
+          }
           return null;
-        })
+        }).finally(() => clearTimeout(tablesTimeout))
       ]);
 
       // Handle logs response
@@ -99,19 +138,46 @@ export default function ReplicationStatus({
       setLoadingLogs(false);
       setLoadingTables(false);
     } finally {
-      setLoading(false);
+      clearTimeout(timeoutId);
+      if (!isBackgroundRefresh) {
+        setLoading(false);
+      }
+      setRefreshing(false);
     }
   };
 
+  // Initial load - only when subscriptionId changes
   useEffect(() => {
-    loadData();
+    loadData(false); // Initial load, show loading state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subscriptionId]);
 
-    if (autoRefresh) {
-      const interval = setInterval(loadData, refreshInterval);
-      return () => clearInterval(interval);
+  // Manual refresh when timeframe changes (user action, not auto-refresh)
+  useEffect(() => {
+    // Only refresh if we already have data (not on initial load)
+    if (logs.length > 0 || tables.length > 0) {
+      loadData(false); // User changed timeframe, show loading briefly
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subscriptionId, autoRefresh, refreshInterval, timeRange, rateOfChangeTimeframe]);
+  }, [rateOfChangeTimeframe]); // Only refresh when user changes timeframe
+
+  // Background refresh - separate effect that doesn't trigger on timeframe changes
+  useEffect(() => {
+    if (!autoRefresh) return;
+    
+    // Don't start refresh immediately - wait for initial load to complete
+    // Only refresh if we already have data (not on initial load)
+    if (logs.length === 0 && tables.length === 0) {
+      return; // Wait for initial load
+    }
+
+    const interval = setInterval(() => {
+      loadData(true); // Background refresh, don't show loading state
+    }, refreshInterval);
+    
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRefresh, refreshInterval, subscriptionId]); // Only depend on these, not timeRange/timeframe
 
   const filteredLogs = logs.filter(log => {
     if (filterLevel !== 'all' && log.level !== filterLevel) return false;
@@ -584,8 +650,8 @@ export default function ReplicationStatus({
           </div>
           </>
           )}
-          {loadingTables && tables.length > 0 && (
-            <div className="mt-4 text-sm text-gray-600 text-center">Refreshing tables...</div>
+          {refreshing && tables.length > 0 && (
+            <div className="mt-4 text-xs text-gray-500 text-center">🔄 Refreshing in background...</div>
           )}
         </div>
       )}

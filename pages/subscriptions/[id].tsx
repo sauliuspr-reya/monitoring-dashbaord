@@ -287,7 +287,7 @@ export default function SubscriptionDetails() {
           <ReplicationStatusComponent 
             subscriptionId={id as string}
             autoRefresh={true}
-            refreshInterval={15000}
+            refreshInterval={300000}
             defaultTimeRange="1h"
           />
         </div>
