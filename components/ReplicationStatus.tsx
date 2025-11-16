@@ -41,6 +41,8 @@ export default function ReplicationStatus({
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [tables, setTables] = useState<TableStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingTables, setLoadingTables] = useState(true);
+  const [loadingLogs, setLoadingLogs] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filterLevel, setFilterLevel] = useState<string>('all');
   const [filterCategory, setFilterCategory] = useState<string>('all');
@@ -51,25 +53,51 @@ export default function ReplicationStatus({
 
   const loadData = async () => {
     try {
+      setError(null);
+      setLoadingLogs(true);
+      setLoadingTables(true);
+      
       // Load logs and tables in parallel
       const [logsRes, tablesRes] = await Promise.all([
-        fetch(`/api/subscriptions/${subscriptionId}/logs`).catch(() => null),
-        fetch(`/api/subscriptions/${subscriptionId}/tables?timeframe=${rateOfChangeTimeframe}`).catch(() => null)
+        fetch(`/api/subscriptions/${subscriptionId}/logs`).catch((err) => {
+          console.error('[ReplicationStatus] Failed to load logs:', err);
+          return null;
+        }),
+        fetch(`/api/subscriptions/${subscriptionId}/tables?timeframe=${rateOfChangeTimeframe}`).catch((err) => {
+          console.error('[ReplicationStatus] Failed to load tables:', err);
+          return null;
+        })
       ]);
 
+      // Handle logs response
       if (logsRes?.ok) {
         const logsData = await logsRes.json();
         setLogs(logsData.logs || []);
+      } else if (logsRes) {
+        console.warn('[ReplicationStatus] Logs request failed:', logsRes.status, logsRes.statusText);
       }
+      setLoadingLogs(false);
 
+      // Handle tables response
       if (tablesRes?.ok) {
         const tablesData = await tablesRes.json();
         setTables(tablesData.tables || []);
+      } else if (tablesRes) {
+        // Request completed but with error status
+        const errorData = await tablesRes.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('[ReplicationStatus] Tables request failed:', tablesRes.status, errorData.error || errorData.message);
+        setError(`Failed to load tables: ${errorData.error || errorData.message || tablesRes.statusText}`);
+      } else {
+        // Request failed (network error, etc.)
+        console.error('[ReplicationStatus] Tables request failed: Network error or request was null');
+        setError('Failed to load tables: Network error or request timeout');
       }
-
-      setError(null);
+      setLoadingTables(false);
     } catch (err: any) {
-      setError(err.message);
+      console.error('[ReplicationStatus] Error in loadData:', err);
+      setError(err.message || 'Failed to load data');
+      setLoadingLogs(false);
+      setLoadingTables(false);
     } finally {
       setLoading(false);
     }
@@ -163,6 +191,7 @@ export default function ReplicationStatus({
     laggingTables: tables.filter(t => t.status === 'lagging').length,
   };
 
+  // Show loading only on initial load when nothing has loaded yet
   if (loading && logs.length === 0 && tables.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow p-6">
@@ -350,6 +379,23 @@ export default function ReplicationStatus({
       {/* Tables Tab */}
       {activeTab === 'tables' && (
         <div className="p-6">
+          {loadingTables && tables.length === 0 && (
+            <div className="text-center py-12 text-gray-600">
+              <div className="text-lg mb-2">Loading tables...</div>
+              <div className="text-sm text-gray-500">This may take a moment for large subscriptions</div>
+            </div>
+          )}
+          {!loadingTables && tables.length === 0 && !error && (
+            <div className="text-center py-12 text-gray-500">No tables found</div>
+          )}
+          {error && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="text-red-800 font-medium">Error Loading Tables</div>
+              <div className="text-red-600 text-sm mt-1">{error}</div>
+            </div>
+          )}
+          {!loadingTables && tables.length > 0 && (
+          <>
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-4 text-sm text-gray-600">
               <span>✅ Safe: {summary.safeTables}</span>
@@ -536,6 +582,11 @@ export default function ReplicationStatus({
               </tbody>
             </table>
           </div>
+          </>
+          )}
+          {loadingTables && tables.length > 0 && (
+            <div className="mt-4 text-sm text-gray-600 text-center">Refreshing tables...</div>
+          )}
         </div>
       )}
 

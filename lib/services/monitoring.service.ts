@@ -104,14 +104,25 @@ export class MonitoringService {
     };
 
     try {
-      // Get row counts from both databases
+      // OPTIMIZATION: Use estimates instead of COUNT(*) - much faster and accurate enough
+      // COUNT(*) is too expensive on large tables and kills database performance
       const [sourceResult, targetResult] = await Promise.all([
-        sourcePool.query(`SELECT COUNT(*) as count FROM ${schemaName}."${tableName}"`),
-        targetPool.query(`SELECT COUNT(*) as count FROM ${schemaName}."${tableName}"`).catch(() => ({ rows: [{ count: '0' }] })),
+        sourcePool.query(`
+          SELECT COALESCE(reltuples::bigint, 0) as estimate
+          FROM pg_class
+          WHERE relname = $1 
+            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+        `, [tableName, schemaName]),
+        targetPool.query(`
+          SELECT COALESCE(reltuples::bigint, 0) as estimate
+          FROM pg_class
+          WHERE relname = $1 
+            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+        `, [tableName, schemaName]).catch(() => ({ rows: [{ estimate: '0' }] })),
       ]);
 
-      status.sourceRowCount = parseInt(sourceResult.rows[0].count, 10);
-      status.targetRowCount = parseInt(targetResult.rows[0].count, 10);
+      status.sourceRowCount = parseInt(sourceResult.rows[0]?.estimate || '0', 10);
+      status.targetRowCount = parseInt(targetResult.rows[0]?.estimate || '0', 10);
       status.gapSize = status.sourceRowCount - status.targetRowCount;
 
       // Determine status

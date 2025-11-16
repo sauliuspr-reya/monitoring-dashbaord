@@ -78,20 +78,27 @@ export class RateOfChangeService {
     schemaName: string,
     tableName: string
   ): Promise<void> {
-    // Get current row count from source
-    const sourceCountResult = await sourcePool.query(
-      `SELECT COUNT(*) as count FROM ${schemaName}."${tableName}"`
-    );
-    const sourceRowCount = parseInt(sourceCountResult.rows[0].count, 10);
+    // OPTIMIZATION: Use estimates instead of COUNT(*) - much faster
+    // Get current row count from source (using estimate)
+    const sourceCountResult = await sourcePool.query(`
+      SELECT COALESCE(reltuples::bigint, 0) as estimate
+      FROM pg_class
+      WHERE relname = $1 
+        AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+    `, [tableName, schemaName]);
+    const sourceRowCount = parseInt(sourceCountResult.rows[0]?.estimate || '0', 10);
 
-    // Get target row count if available
+    // Get target row count if available (using estimate)
     let targetRowCount: number | null = null;
     if (targetPool) {
       try {
-        const targetCountResult = await targetPool.query(
-          `SELECT COUNT(*) as count FROM ${schemaName}."${tableName}"`
-        );
-        targetRowCount = parseInt(targetCountResult.rows[0].count, 10);
+        const targetCountResult = await targetPool.query(`
+          SELECT COALESCE(reltuples::bigint, 0) as estimate
+          FROM pg_class
+          WHERE relname = $1 
+            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+        `, [tableName, schemaName]);
+        targetRowCount = parseInt(targetCountResult.rows[0]?.estimate || '0', 10);
       } catch (error) {
         // Table might not exist on target yet
         targetRowCount = null;

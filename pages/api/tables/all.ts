@@ -754,8 +754,10 @@ export default async function handler(
             const tableSubsForCount = tableSubscriptions.get(tableName) || [];
             const isInSubscription = tableSubsForCount.length > 0;
             
-            if (isInSubscription) {
-              // Get exact source count if in subscription
+            // OPTIMIZATION: Use estimates for ALL tables - COUNT(*) is too expensive
+            // Only use exact counts for very small tables (< 100K rows) in subscriptions
+            if (isInSubscription && sourceStats && sourceStats.estimate < 100000 && sourceStats.estimate > 0) {
+              // Only get exact count for very small tables where estimate might be inaccurate
               if (sourcePool && sourceStats) {
                 try {
                   const sourceCountResult = await sourcePool.query(`
@@ -779,7 +781,6 @@ export default async function handler(
                 }
               }
               
-              // Get exact target count if in subscription
               if (targetPool && targetStats) {
                 try {
                   const targetCountResult = await targetPool.query(`
@@ -802,6 +803,10 @@ export default async function handler(
                   targetCount = Math.max(0, targetStats.estimate);
                 }
               }
+            } else if (isInSubscription) {
+              // For larger tables, use estimates (fast and accurate enough)
+              sourceCount = sourceStats?.estimate || 0;
+              targetCount = targetStats?.estimate || 0;
             }
 
             const tableSubs = tableSubscriptions.get(tableName) || []; // This table's subscriptions (which subscriptions include this table)

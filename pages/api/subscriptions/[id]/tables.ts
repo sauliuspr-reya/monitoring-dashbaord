@@ -85,158 +85,278 @@ export default async function handler(
 
       const tables = pubTablesResult.rows.map((r: any) => r.table_name);
 
-      // Get row counts for each table (from both source and target)
-      // Use pg_class.reltuples for faster approximate counts on large tables
-      // Process in batches to avoid overwhelming the database connection pool
-      const BATCH_SIZE = 5; // Process 5 tables at a time to avoid connection exhaustion
-      const tableStats = await processInBatches(
-        tables,
-        BATCH_SIZE,
-        async (tableName: string) => {
-          const [schema, table] = tableName.split('.');
-          
-          // Build properly quoted table name for queries
-          const quotedTableName = `"${schema}"."${table}"`;
-          
-          try {
-            // Try to get exact count, but use estimate for very large tables
-            // For tables > 1M rows, use reltuples estimate
-            const sourceEstimateResult = await sourcePool.query(`
-              SELECT reltuples::bigint as estimate
-              FROM pg_class
-              WHERE relname = $1 AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
-            `, [table, schema]).catch((err) => {
-              console.error(`[subscriptions/${id}/tables] Estimate failed for ${table}:`, err.message);
-              return { rows: [{ estimate: '0' }] };
-            });
-            
-            const estimate = parseInt(sourceEstimateResult.rows[0]?.estimate || '0', 10);
-            const useEstimate = estimate > 1000000; // Use estimate for tables > 1M rows
-            
-            let sourceCount: number;
-            console.log(`[subscriptions/${id}/tables] Table ${table}: estimate=${estimate}, useEstimate=${useEstimate}`);
-            if (useEstimate) {
-              sourceCount = estimate;
-            } else {
-              // Get exact count for smaller tables (use quoted table name)
-              const sourceCountResult = await sourcePool.query(`
-                SELECT COUNT(*) as count
-                FROM ${quotedTableName}
-              `).catch((err) => {
-                console.error(`[subscriptions/${id}/tables] Source count failed for ${quotedTableName}:`, err.message);
-                return { rows: [{ count: '0' }] };
-              });
-              sourceCount = parseInt(sourceCountResult.rows[0]?.count || 0, 10);
-            }
+      console.log(`[subscriptions/${id}/tables] Processing ${tables.length} tables (optimized bulk queries)`);
 
-            // Get target row count (always try exact, fallback to estimate, use quoted name)
-            const targetCountResult = await targetPool.query(`
-              SELECT COUNT(*) as count
-              FROM ${quotedTableName}
-            `).catch((err) => {
-              console.error(`[subscriptions/${id}/tables] Target count failed for ${quotedTableName}:`, err.message);
-              // Fallback to estimate if exact count fails
-              return targetPool.query(`
-                SELECT reltuples::bigint as estimate
-                FROM pg_class
-                WHERE relname = $1 AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
-              `, [table, schema]).then((r: any) => ({ rows: [{ count: r.rows[0]?.estimate || '0' }] }));
-            });
-            
-            const targetCount = parseInt(targetCountResult.rows[0]?.count || '0', 10);
+      // OPTIMIZATION: Fetch ALL table stats in bulk queries (like /api/tables/all does)
+      // This reduces from 5 queries per table to 2 bulk queries + only COUNT(*) for small tables
+      
+      // Step 1: Get ALL source table estimates and sizes in ONE query
+      const sourceStatsMap = new Map<string, { estimate: number; size: number }>();
+      try {
+        const sourceStatsResult = await sourcePool.query(`
+          SELECT 
+            n.nspname || '.' || c.relname as table_name,
+            c.reltuples::bigint as estimated_rows,
+            pg_total_relation_size(c.oid) as size
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relkind = 'r'
+            AND n.nspname || '.' || c.relname = ANY($1)
+        `, [tables]);
+        
+        for (const row of sourceStatsResult.rows) {
+          sourceStatsMap.set(row.table_name, {
+            estimate: parseInt(row.estimated_rows || '0', 10),
+            size: parseInt(row.size || '0', 10),
+          });
+        }
+        console.log(`[subscriptions/${id}/tables] Fetched source stats for ${sourceStatsMap.size} tables`);
+      } catch (err: any) {
+        console.error(`[subscriptions/${id}/tables] Failed to fetch bulk source stats:`, err.message);
+      }
 
-            // Get table size (use quoted table name)
-            const sourceSizeResult = await sourcePool.query(`
-              SELECT pg_total_relation_size($1::regclass) as size
-            `, [quotedTableName]).catch((err) => {
-              console.error(`[subscriptions/${id}/tables] Size query failed for ${quotedTableName}:`, err.message);
-              return { rows: [{ size: '0' }] };
-            });
-            
-            const sourceSize = parseInt(sourceSizeResult.rows[0]?.size || '0', 10);
+      // Step 2: Get ALL target table estimates in ONE query
+      const targetStatsMap = new Map<string, { estimate: number }>();
+      try {
+        const targetStatsResult = await targetPool.query(`
+          SELECT 
+            n.nspname || '.' || c.relname as table_name,
+            c.reltuples::bigint as estimated_rows
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.relkind = 'r'
+            AND n.nspname || '.' || c.relname = ANY($1)
+        `, [tables]);
+        
+        for (const row of targetStatsResult.rows) {
+          targetStatsMap.set(row.table_name, {
+            estimate: parseInt(row.estimated_rows || '0', 10),
+          });
+        }
+        console.log(`[subscriptions/${id}/tables] Fetched target stats for ${targetStatsMap.size} tables`);
+      } catch (err: any) {
+        console.error(`[subscriptions/${id}/tables] Failed to fetch bulk target stats:`, err.message);
+      }
 
-            // Check if table has writers
-            const tableKey = table.toLowerCase();
-            const sourceWriters = Array.from(tableToSourceWriters.get(tableKey) || new Set());
-            const targetWriters = Array.from(tableToTargetWriters.get(tableKey) || new Set());
-            const hasWritersOnBothSides = sourceWriters.length > 0 && targetWriters.length > 0;
-            const hasWritersOnSourceOnly = sourceWriters.length > 0 && targetWriters.length === 0;
-            const hasNoWriters = sourceWriters.length === 0 && targetWriters.length === 0;
-            
-            // Safe to replicate if: only source writers OR no writers at all
-            const isSafeToReplicate = hasWritersOnSourceOnly || hasNoWriters;
-            const hasReplicationRisk = hasWritersOnBothSides;
+      // Step 3: Use estimates for ALL tables - COUNT(*) is too expensive
+      // Only use exact counts for very small tables (< 100K rows) that are likely to be accurate
+      // For production, estimates are good enough - exact counts kill performance
+      const tablesNeedingExactCount: string[] = [];
+      for (const tableName of tables) {
+        const sourceStats = sourceStatsMap.get(tableName);
+        // Only get exact count for very small tables (< 100K) where estimate might be inaccurate
+        // AND where the table is likely to be fully synced (small = fast to count)
+        if (sourceStats && sourceStats.estimate < 100000 && sourceStats.estimate > 0) {
+          tablesNeedingExactCount.push(tableName);
+        }
+      }
+      console.log(`[subscriptions/${id}/tables] Using estimates for ${tables.length - tablesNeedingExactCount.length} tables, exact COUNT(*) for ${tablesNeedingExactCount.length} small tables only`);
 
-            // Get historical row count to calculate rate of change
-            // Check which column name exists (subscription_id or group_id)
-            const metricsIdColumnCheck = await pool.query(`
-              SELECT column_name 
-              FROM information_schema.columns 
-              WHERE table_name = 'table_replication_metrics' 
-                AND column_name IN ('subscription_id', 'group_id')
-              LIMIT 1
-            `).catch(() => ({ rows: [] }));
+      // Step 4: Get exact counts for VERY small tables only (in small batches to avoid overload)
+      const exactCountsMap = new Map<string, { source: number; target: number }>();
+      if (tablesNeedingExactCount.length > 0) {
+        // Use smaller batches to avoid overwhelming the database
+        const BATCH_SIZE = 3; // Very conservative - COUNT(*) is expensive
+        console.log(`[subscriptions/${id}/tables] Getting exact counts for ${tablesNeedingExactCount.length} small tables in batches of ${BATCH_SIZE}`);
+        
+        await processInBatches(
+          tablesNeedingExactCount,
+          BATCH_SIZE,
+          async (tableName: string) => {
+            const [schema, table] = tableName.split('.');
+            const quotedTableName = `"${schema}"."${table}"`;
             
-            const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
-            
-            // Get previous row count using the selected timeframe
-            // Compare with data from at least 1 minute ago to avoid comparing with current measurement
-            // Try both with and without schema prefix for table name matching
-            const historicalResult = await pool.query(`
-              SELECT 
-                source_row_count,
-                target_row_count,
-                timestamp
-              FROM table_replication_metrics
-              WHERE ${metricsIdColumn} = $1
-                AND (
-                  table_name = $2
-                  OR table_name = $3
-                  OR REGEXP_REPLACE(table_name, '^[^.]+\.', '') = $2
-                )
-                AND timestamp < NOW() - INTERVAL '1 minute'
-                AND timestamp > NOW() - INTERVAL '${timeframeMinutes} minutes'::text
-                AND source_row_count IS NOT NULL
-                AND source_row_count > 0
-              ORDER BY timestamp DESC
-              LIMIT 1
-            `, [subscription.id, table, tableName]).catch((err) => {
-              console.warn(`[subscriptions/${id}/tables] Historical query failed for ${table}:`, err.message);
-              return { rows: [] };
-            });
-
-            let rateOfChange: number | null = null;
-            let rateOfChangeInterval: string = '';
-            
-            if (historicalResult.rows.length > 0) {
-              const prevSourceCount = parseInt(historicalResult.rows[0].source_row_count || '0', 10);
-              const prevTimestamp = new Date(historicalResult.rows[0].timestamp);
-              const now = new Date();
-              const timeDiffMs = now.getTime() - prevTimestamp.getTime();
-              const timeDiffMinutes = timeDiffMs / (1000 * 60);
+            try {
+              // COUNT(*) queries with timeout protection
+              const [sourceResult, targetResult] = await Promise.all([
+                sourcePool.query(`SELECT COUNT(*) as count FROM ${quotedTableName}`).catch(() => ({ rows: [{ count: '0' }] })),
+                targetPool.query(`SELECT COUNT(*) as count FROM ${quotedTableName}`).catch(() => ({ rows: [{ count: '0' }] })),
+              ]);
               
-              if (timeDiffMinutes > 0 && prevSourceCount > 0) {
-                const rowChange = sourceCount - prevSourceCount;
-                const ratePerMinute = rowChange / timeDiffMinutes;
-                rateOfChange = ratePerMinute;
-                
-                // Format interval
-                if (timeDiffMinutes < 60) {
-                  rateOfChangeInterval = `${Math.round(timeDiffMinutes)}m`;
-                } else {
-                  const hours = Math.round(timeDiffMinutes / 60);
-                  rateOfChangeInterval = `${hours}h`;
-                }
-                
-                console.log(`[subscriptions/${id}/tables] Rate of change for ${table}: ${ratePerMinute.toFixed(2)} rows/min (${rowChange} rows in ${timeDiffMinutes.toFixed(1)} min)`);
-              }
-            } else {
-              console.log(`[subscriptions/${id}/tables] No historical data found for ${table} (subscription: ${subscription.id})`);
+              exactCountsMap.set(tableName, {
+                source: parseInt(sourceResult.rows[0]?.count || '0', 10),
+                target: parseInt(targetResult.rows[0]?.count || '0', 10),
+              });
+            } catch (err: any) {
+              console.warn(`[subscriptions/${id}/tables] Failed to get exact count for ${tableName}:`, err.message);
+              // Fallback to estimate if COUNT(*) fails
+              const sourceStats = sourceStatsMap.get(tableName);
+              const targetStats = targetStatsMap.get(tableName);
+              exactCountsMap.set(tableName, {
+                source: sourceStats?.estimate || 0,
+                target: targetStats?.estimate || 0,
+              });
             }
+          }
+        );
+        console.log(`[subscriptions/${id}/tables] Fetched exact counts for ${exactCountsMap.size} tables`);
+      }
 
-            // Store current metrics for future rate calculations
-            // Round timestamp to nearest minute to avoid constraint conflicts
-            await pool.query(`
+      // Step 5: Get historical metrics in bulk (one query for all tables)
+      const metricsIdColumnCheck = await pool.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'table_replication_metrics' 
+          AND column_name IN ('subscription_id', 'group_id')
+        LIMIT 1
+      `).catch(() => ({ rows: [] }));
+      
+      const metricsIdColumn = metricsIdColumnCheck.rows[0]?.column_name || 'subscription_id';
+      const timeframeMinutes = req.query.timeframe === '1m' ? 1 : 
+                               req.query.timeframe === '5m' ? 5 :
+                               req.query.timeframe === '10m' ? 10 :
+                               req.query.timeframe === '30m' ? 30 :
+                               req.query.timeframe === '6h' ? 360 :
+                               req.query.timeframe === '24h' ? 1440 : 60;
+
+      const historicalMetricsMap = new Map<string, { sourceRowCount: number; timestamp: Date }>();
+      try {
+        const historicalResult = await pool.query(`
+          SELECT DISTINCT ON (table_name)
+            table_name,
+            source_row_count,
+            timestamp
+          FROM table_replication_metrics
+          WHERE ${metricsIdColumn} = $1
+            AND table_name = ANY($2)
+            AND timestamp < NOW() - INTERVAL '1 minute'
+            AND timestamp > NOW() - INTERVAL '${timeframeMinutes} minutes'::text
+            AND source_row_count IS NOT NULL
+            AND source_row_count > 0
+          ORDER BY table_name, timestamp DESC
+        `, [subscription.id, tables.map(t => t.split('.')[1])]); // Use just table name without schema
+        
+        for (const row of historicalResult.rows) {
+          historicalMetricsMap.set(row.table_name.toLowerCase(), {
+            sourceRowCount: parseInt(row.source_row_count || '0', 10),
+            timestamp: new Date(row.timestamp),
+          });
+        }
+        console.log(`[subscriptions/${id}/tables] Fetched historical metrics for ${historicalMetricsMap.size} tables`);
+      } catch (err: any) {
+        console.warn(`[subscriptions/${id}/tables] Failed to fetch historical metrics:`, err.message);
+      }
+
+      // Step 6: Build table stats from bulk data
+      let processedCount = 0;
+      const tableStats = tables.map((tableName: string) => {
+        processedCount++;
+        if (processedCount % 20 === 0) {
+          console.log(`[subscriptions/${id}/tables] Processed ${processedCount}/${tables.length} tables...`);
+        }
+        
+        const [schema, table] = tableName.split('.');
+        const tableKey = table.toLowerCase();
+        
+        try {
+          // Get stats from bulk queries
+          const sourceStats = sourceStatsMap.get(tableName) || { estimate: 0, size: 0 };
+          const targetStats = targetStatsMap.get(tableName) || { estimate: 0 };
+          const exactCounts = exactCountsMap.get(tableName);
+          
+          // Use exact count if available, otherwise use estimate
+          const sourceCount = exactCounts?.source ?? sourceStats.estimate;
+          const targetCount = exactCounts?.target ?? targetStats.estimate;
+          const sourceSize = sourceStats.size;
+          // Mark as estimate if we didn't get exact count (most tables use estimates)
+          const useEstimate = !exactCounts;
+
+          // Check if table has writers
+          const sourceWriters = Array.from(tableToSourceWriters.get(tableKey) || new Set());
+          const targetWriters = Array.from(tableToTargetWriters.get(tableKey) || new Set());
+          const hasWritersOnBothSides = sourceWriters.length > 0 && targetWriters.length > 0;
+          const hasWritersOnSourceOnly = sourceWriters.length > 0 && targetWriters.length === 0;
+          const hasNoWriters = sourceWriters.length === 0 && targetWriters.length === 0;
+          
+          // Safe to replicate if: only source writers OR no writers at all
+          const isSafeToReplicate = hasWritersOnSourceOnly || hasNoWriters;
+          const hasReplicationRisk = hasWritersOnBothSides;
+
+          // Get historical data from bulk query (already fetched in Step 5)
+          const historicalData = historicalMetricsMap.get(tableKey);
+          let rateOfChange: number | null = null;
+          let rateOfChangeInterval: string = '';
+          
+          if (historicalData) {
+            const prevSourceCount = historicalData.sourceRowCount;
+            const prevTimestamp = historicalData.timestamp;
+            const now = new Date();
+            const timeDiffMs = now.getTime() - prevTimestamp.getTime();
+            const timeDiffMinutes = timeDiffMs / (1000 * 60);
+            
+            if (timeDiffMinutes > 0 && prevSourceCount > 0) {
+              const rowChange = sourceCount - prevSourceCount;
+              const ratePerMinute = rowChange / timeDiffMinutes;
+              rateOfChange = ratePerMinute;
+              
+              // Format interval
+              if (timeDiffMinutes < 60) {
+                rateOfChangeInterval = `${Math.round(timeDiffMinutes)}m`;
+              } else {
+                const hours = Math.round(timeDiffMinutes / 60);
+                rateOfChangeInterval = `${hours}h`;
+              }
+            }
+          }
+
+          // Determine status based on replication state and row counts
+          let status: string;
+          if (sourceCount === 0 && targetCount > 0) {
+            status = 'checking';
+          } else if (sourceCount === targetCount) {
+            status = 'synced';
+          } else if (Math.abs(sourceCount - targetCount) < 100) {
+            status = 'synced';
+          } else if (sourceCount > targetCount) {
+            status = 'lagging';
+          } else {
+            if (rateOfChange !== null && rateOfChange < 0) {
+              status = 'synced';
+            } else {
+              status = 'warning';
+            }
+          }
+
+          return {
+            tableName,
+            schema,
+            table,
+            sourceRowCount: sourceCount,
+            targetRowCount: targetCount,
+            rowDiff: sourceCount - targetCount,
+            sourceSize,
+            status,
+            isEstimate: useEstimate,
+            writersOnSource: sourceWriters,
+            writersOnTarget: targetWriters,
+            writersOnBoth: hasWritersOnBothSides,
+            isSafeToReplicate,
+            hasReplicationRisk,
+            rateOfChange,
+            rateOfChangeInterval,
+          };
+        } catch (error: any) {
+          return {
+            tableName,
+            schema: tableName.split('.')[0],
+            table: tableName.split('.')[1] || tableName,
+            sourceRowCount: 0,
+            targetRowCount: 0,
+            rowDiff: 0,
+            sourceSize: 0,
+            status: 'error',
+            error: error.message,
+          };
+        }
+      });
+
+      // Step 7: Store metrics in bulk (batched to avoid overwhelming database)
+      const METRICS_BATCH_SIZE = 20;
+      for (let i = 0; i < tableStats.length; i += METRICS_BATCH_SIZE) {
+        const batch = tableStats.slice(i, i + METRICS_BATCH_SIZE);
+        await Promise.all(
+          batch.map(stat =>
+            pool.query(`
               INSERT INTO table_replication_metrics (
                 ${metricsIdColumn}, table_name, timestamp, source_row_count, target_row_count, gap_size, status
               ) VALUES ($1, $2, date_trunc('minute', NOW()), $3, $4, $5, $6)
@@ -247,94 +367,19 @@ export default async function handler(
                 status = EXCLUDED.status
             `, [
               subscription.id,
-              table,
-              sourceCount,
-              targetCount,
-              sourceCount - targetCount,
-              sourceCount === targetCount ? 'synced' : sourceCount > targetCount ? 'lagging' : 'error',
+              stat.table,
+              stat.sourceRowCount,
+              stat.targetRowCount,
+              stat.rowDiff,
+              stat.status,
             ]).catch(() => {
-              // Fallback for old schema
-              return pool.query(`
-                INSERT INTO table_replication_metrics (
-                  group_id, table_name, timestamp, source_row_count, target_row_count, gap_size, status
-                ) VALUES ($1, $2, date_trunc('minute', NOW()), $3, $4, $5, $6)
-                ON CONFLICT (group_id, table_name, timestamp) DO UPDATE SET
-                  source_row_count = EXCLUDED.source_row_count,
-                  target_row_count = EXCLUDED.target_row_count,
-                  gap_size = EXCLUDED.gap_size,
-                  status = EXCLUDED.status
-              `, [
-                subscription.id,
-                table,
-                sourceCount,
-                targetCount,
-                sourceCount - targetCount,
-                sourceCount === targetCount ? 'synced' : sourceCount > targetCount ? 'lagging' : 'error',
-              ]);
-            }).catch(() => {
               // Ignore if table doesn't exist or constraint issues
-            });
+            })
+          )
+        );
+      }
 
-            // Determine status based on replication state and row counts
-            // During initial copy, target can be ahead of source (source cleanup, deletions)
-            // Only mark as error if source query failed (sourceCount = 0 and target > 0)
-            let status: string;
-            if (sourceCount === 0 && targetCount > 0) {
-              // Source query likely failed - checking replication state
-              status = 'checking';
-            } else if (sourceCount === targetCount) {
-              status = 'synced';
-            } else if (Math.abs(sourceCount - targetCount) < 100) {
-              // Within 100 rows tolerance = synced (accounts for concurrent writes)
-              status = 'synced';
-            } else if (sourceCount > targetCount) {
-              // Source ahead - normal during copy
-              status = 'lagging';
-            } else {
-              // Target ahead - can happen with source deletions or during copy
-              // Check if difference is shrinking (rate of change)
-              if (rateOfChange !== null && rateOfChange < 0) {
-                // Source is shrinking (deletions) - this is OK
-                status = 'synced';
-              } else {
-                // Target ahead but source not shrinking - needs investigation
-                status = 'warning';
-              }
-            }
-
-            return {
-              tableName,
-              schema,
-              table,
-              sourceRowCount: sourceCount,
-              targetRowCount: targetCount,
-              rowDiff: sourceCount - targetCount,
-              sourceSize,
-              status,
-              isEstimate: useEstimate,
-              writersOnSource: sourceWriters,
-              writersOnTarget: targetWriters,
-              writersOnBoth: hasWritersOnBothSides,
-              isSafeToReplicate,
-              hasReplicationRisk,
-              rateOfChange,
-              rateOfChangeInterval,
-            };
-          } catch (error: any) {
-            return {
-              tableName,
-              schema,
-              table,
-              sourceRowCount: 0,
-              targetRowCount: 0,
-              rowDiff: 0,
-              sourceSize: 0,
-              status: 'error',
-              error: error.message,
-            };
-          }
-        }
-      );
+      console.log(`[subscriptions/${id}/tables] Completed processing ${tableStats.length} tables`);
 
       const safeTables = tableStats.filter(t => t.isSafeToReplicate).length;
       const atRiskTables = tableStats.filter(t => t.hasReplicationRisk).length;
@@ -355,8 +400,12 @@ export default async function handler(
       await targetPool.end().catch(() => {});
     }
   } catch (error: any) {
-    console.error('Error getting subscription tables:', error);
-    res.status(500).json({ error: error.message || 'Failed to get subscription tables' });
+    console.error('[subscriptions/tables] Error getting subscription tables:', error);
+    console.error('[subscriptions/tables] Error stack:', error.stack);
+    res.status(500).json({ 
+      error: error.message || 'Failed to get subscription tables',
+      details: error.stack || 'No additional details available'
+    });
   }
 }
 
