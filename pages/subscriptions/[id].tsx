@@ -3,7 +3,6 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { ReplicationStatus } from '@/lib/types';
 import Navbar from '@/components/Navbar';
-import ManageSubscriptionTables from '@/components/ManageSubscriptionTables';
 import ReplicationStatusComponent from '@/components/ReplicationStatus';
 
 // Sorting and table management now handled by ReplicationStatus component
@@ -16,7 +15,6 @@ export default function SubscriptionDetails() {
   const [error, setError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [showManageTables, setShowManageTables] = useState(false);
 
   const loadSubscriptionDetails = useCallback(async () => {
     if (!id) return;
@@ -170,13 +168,14 @@ export default function SubscriptionDetails() {
             ← Back to Subscriptions
           </Link>
 
+        {/* Subscription Header - Clean and Simple */}
         <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">
-                {subscription.subscriptionName || subscription.groupName}
-              </h1>
-              <div className="mt-2">
+          <div className="flex justify-between items-start">
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-3">
+                <h1 className="text-2xl font-bold text-gray-900">
+                  {subscription.subscriptionName || subscription.groupName}
+                </h1>
                 <span
                   className={`px-3 py-1 rounded text-sm font-medium ${getStatusColor(
                     subscription.status || 'stopped'
@@ -185,140 +184,105 @@ export default function SubscriptionDetails() {
                   {(subscription.status || 'stopped').toUpperCase()}
                 </span>
               </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="text-right text-sm text-gray-600">
-                <div>Enabled: {subscription.enabled ? 'Yes' : 'No'}</div>
-                <div>Worker: {subscription.workerRunning ? 'Running' : 'Stopped'}</div>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleToggle(!subscription.enabled)}
-                  disabled={toggling}
-                  className={`px-4 py-2 rounded-md text-sm font-medium ${
-                    subscription.enabled
-                      ? 'bg-yellow-600 text-white hover:bg-yellow-700'
-                      : 'bg-green-600 text-white hover:bg-green-700'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {toggling ? '...' : subscription.enabled ? 'Disable' : 'Enable'}
-                </button>
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {deleting ? 'Deleting...' : 'Delete'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-            <div className="bg-gray-50 p-4 rounded">
-              <div className="text-xs text-gray-500 mb-1">Replication Lag</div>
-              <div className="text-2xl font-semibold">{formatBytes(subscription.lagBytes || 0)}</div>
-              {subscription.lagSeconds > 0 && (
-                <div className="text-xs text-gray-500 mt-1">
-                  {subscription.lagSeconds}s behind
+              
+              {/* Key Metrics - Compact */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
+                <div>
+                  <div className="text-xs text-gray-500">Replication Lag</div>
+                  <div className="text-lg font-semibold">{formatBytes(subscription.lagBytes || 0)}</div>
+                  {subscription.lagSeconds > 0 && (
+                    <div className="text-xs text-gray-400">{subscription.lagSeconds}s</div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="bg-gray-50 p-4 rounded">
-              <div className="text-xs text-gray-500 mb-1">Slot Lag</div>
-              <div className="text-2xl font-semibold">{formatBytes(subscription.slotLagBytes || 0)}</div>
-            </div>
-            <div className="bg-gray-50 p-4 rounded">
-              <div className="text-xs text-gray-500 mb-1">Tables</div>
-              <div className="text-2xl font-semibold">{subscription.tableCount}</div>
-              {subscription.tablesWithIssues > 0 && (
-                <div className="text-xs text-red-600 mt-1">
-                  {subscription.tablesWithIssues} with issues
+                <div>
+                  <div className="text-xs text-gray-500">Slot Lag</div>
+                  <div className="text-lg font-semibold">{formatBytes(subscription.slotLagBytes || 0)}</div>
                 </div>
-              )}
-            </div>
-            <div className="bg-gray-50 p-4 rounded">
-              <div className="text-xs text-gray-500 mb-1">Conflicts</div>
-              <div className={`text-2xl font-semibold ${subscription.conflicts > 0 ? 'text-red-600' : ''}`}>
-                {subscription.conflicts}
+                <div>
+                  <div className="text-xs text-gray-500">Tables</div>
+                  <div className="text-lg font-semibold">{subscription.tableCount}</div>
+                  {subscription.tablesWithIssues > 0 && (
+                    <div className="text-xs text-red-600">{subscription.tablesWithIssues} issues</div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Conflicts</div>
+                  <div className={`text-lg font-semibold ${subscription.conflicts > 0 ? 'text-red-600' : ''}`}>
+                    {subscription.conflicts}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Status</div>
+                  <div className="text-sm">
+                    <span className={subscription.enabled ? 'text-green-600' : 'text-gray-400'}>
+                      {subscription.enabled ? '✓ Enabled' : '✗ Disabled'}
+                    </span>
+                    <br />
+                    <span className={subscription.workerRunning ? 'text-green-600' : 'text-gray-400'}>
+                      {subscription.workerRunning ? '✓ Running' : '✗ Stopped'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Metadata */}
+              <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+                {subscription.lastAppliedAt && (
+                  <span>Last applied: {new Date(subscription.lastAppliedAt).toLocaleString()}</span>
+                )}
+                {subscription.dataCopy !== undefined && (
+                  <span className="px-2 py-1 bg-gray-100 rounded">
+                    data_copy = {subscription.dataCopy ? 'true' : 'false'}
+                  </span>
+                )}
               </div>
             </div>
-          </div>
 
-          {subscription.dataCopy !== undefined && (
-            <div className="mt-4">
-              <span className={`inline-block px-3 py-1 text-sm rounded ${
-                subscription.dataCopy 
-                  ? 'bg-green-100 text-green-800' 
-                  : 'bg-gray-100 text-gray-800'
-              }`}>
-                data_copy = {subscription.dataCopy ? 'true' : 'false'}
-              </span>
+            {/* Action Buttons - Only Essential */}
+            <div className="flex gap-2 ml-4">
+              <button
+                onClick={() => handleToggle(!subscription.enabled)}
+                disabled={toggling}
+                className={`px-4 py-2 rounded-md text-sm font-medium ${
+                  subscription.enabled
+                    ? 'bg-yellow-600 text-white hover:bg-yellow-700'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {toggling ? '...' : subscription.enabled ? 'Disable' : 'Enable'}
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-4 py-2 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
             </div>
-          )}
-
-          {subscription.lastAppliedAt && (
-            <div className="mt-4 text-sm text-gray-600">
-              Last applied: {new Date(subscription.lastAppliedAt).toLocaleString()}
-            </div>
-          )}
-        </div>
-
-        {/* Actions Section - Moved to Top */}
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Actions</h2>
-          <div className="space-y-2">
-            <button
-              onClick={() => setShowManageTables(true)}
-              className="w-full px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center justify-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-              Manage Tables
-            </button>
-            <button
-              onClick={async () => {
-                try {
-                  const res = await fetch(`/api/conflicts/analyze?groupId=${id}`, {
-                    method: 'POST',
-                  });
-                  if (res.ok) {
-                    alert('Conflict analysis started');
-                    loadSubscriptionDetails();
-                  } else {
-                    alert('Failed to start analysis');
-                  }
-                } catch (err) {
-                  alert('Error: ' + err);
-                }
-              }}
-              className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-              Analyze Conflicts
-            </button>
           </div>
         </div>
 
-        {/* Tables Section - Now in unified ReplicationStatus component below */}
-
-        {/* Conflicts Section */}
+        {/* Conflicts Alert - Only show if conflicts exist */}
         {subscription.conflicts > 0 && (
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Conflicts</h2>
-            <div className="text-gray-600">
-              There are {subscription.conflicts} conflict(s) detected. Check the conflicts API for details.
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-red-800 font-medium">⚠️ {subscription.conflicts} Conflict(s) Detected</div>
+                <div className="text-red-600 text-sm mt-1">
+                  Data conflicts detected in replication. Check the Logs tab for details.
+                </div>
+              </div>
+              <Link
+                href={`/api/conflicts?groupId=${id}`}
+                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 text-sm font-medium"
+              >
+                View Details
+              </Link>
             </div>
-            <Link
-              href={`/api/conflicts?groupId=${id}`}
-              className="mt-4 inline-block text-blue-600 hover:text-blue-800"
-            >
-              View Conflicts →
-            </Link>
           </div>
         )}
 
-        {/* Replication Status (Unified: Logs + Rate of Change) */}
+        {/* Replication Status (Unified: Overview, Tables, Logs) */}
         <div className="mt-6">
           <ReplicationStatusComponent 
             subscriptionId={id as string}
@@ -329,19 +293,6 @@ export default function SubscriptionDetails() {
         </div>
         </div>
       </div>
-
-      {/* Manage Tables Modal */}
-      {showManageTables && subscription && (
-        <ManageSubscriptionTables
-          subscriptionId={id as string}
-          subscriptionName={subscription.subscriptionName}
-          onClose={() => setShowManageTables(false)}
-          onUpdate={() => {
-            loadSubscriptionDetails();
-            // Tables will refresh automatically via ReplicationStatus component
-          }}
-        />
-      )}
     </>
   );
 }

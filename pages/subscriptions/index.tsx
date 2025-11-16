@@ -36,8 +36,9 @@ export default function SubscriptionsPage() {
       }
 
       // Fetch status for all subscriptions in parallel
+      // Skip expensive table queries by default - only load when viewing details
       const statusPromises = groupsData.map((group: any) =>
-        fetch(`/api/groups/${group.id}/status`)
+        fetch(`/api/groups/${group.id}/status?includeTables=false`)
           .then((res) => {
             if (!res.ok) {
               console.warn(`Failed to load status for subscription ${group.id}: ${res.statusText}`);

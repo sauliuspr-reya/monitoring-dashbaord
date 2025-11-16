@@ -108,6 +108,9 @@ export function getDbPool(): Pool {
   const hasPassword = !!rawPassword;
   const usedFallback = rawPassword !== process.env.MONITORING_DB_PASSWORD;
   
+  // Allow configuration via environment variable for production tuning
+  const maxConnections = parseInt(process.env.MONITORING_DB_MAX_CONNECTIONS || '50', 10);
+  
   console.log('[db/connection] Initializing database pool:', {
     host,
     port,
@@ -115,15 +118,16 @@ export function getDbPool(): Pool {
     user,
     hasPassword,
     usedFallback,
+    maxConnections,
   });
-
+  
   const config: PoolConfig = {
     host,
     port,
     database,
     user,
     password,
-    max: 20,
+    max: maxConnections, // Increased from 20 to 50 for production workloads (configurable via MONITORING_DB_MAX_CONNECTIONS)
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 30000, // Increased from 2s to 30s to match source/target pools
     query_timeout: 60000, // 60 second query timeout
@@ -147,9 +151,13 @@ export function getDbPool(): Pool {
 
 // Connection pool for source/target databases (for monitoring)
 export function createSourceTargetPool(connectionString: string): Pool {
+  // Allow configuration via environment variable for production tuning
+  // Higher limit needed for production services + dashboard monitoring
+  const maxConnections = parseInt(process.env.SOURCE_TARGET_DB_MAX_CONNECTIONS || '25', 10);
+  
   const pool = new Pool({
     connectionString,
-    max: 10, // Increased from 5 to handle more concurrent queries
+    max: maxConnections, // Increased from 10 to 25 for production workloads (configurable via SOURCE_TARGET_DB_MAX_CONNECTIONS)
     idleTimeoutMillis: 60000, // Increased to 60s to prevent premature connection closure
     connectionTimeoutMillis: 30000, // Increased from 5s to 30s for GCP Cloud SQL
     query_timeout: 60000, // 60 second query timeout

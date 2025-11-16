@@ -62,35 +62,43 @@ export default async function handler(
       // Get conflicts
       const conflicts = await conflictService.getUnresolvedConflicts(group.id);
 
-      // Get table-level metrics (check which column exists)
-      const metricsColumnCheck = await pool.query(`
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'table_replication_metrics' 
-          AND column_name IN ('subscription_id', 'group_id')
-        LIMIT 1
-      `);
+      // Get table-level metrics (optional - skip if includeTables=false to avoid expensive queries)
+      // Only query if explicitly requested (for backward compatibility, default to true)
+      const includeTables = req.query.includeTables !== 'false';
+      let tablesWithIssues = 0;
       
-      const metricsIdColumn = metricsColumnCheck.rows[0]?.column_name || 'subscription_id';
-      
-      const tableMetricsResult = await pool.query(`
-        SELECT 
-          table_name,
-          source_row_count,
-          target_row_count,
-          gap_size,
-          status,
-          last_replicated_at
-        FROM table_replication_metrics
-        WHERE ${metricsIdColumn} = $1
-          AND timestamp > NOW() - INTERVAL '1 hour'
-        ORDER BY timestamp DESC
-      `, [group.id]);
+      if (includeTables) {
+        // Get table-level metrics (check which column exists)
+        const metricsColumnCheck = await pool.query(`
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = 'table_replication_metrics' 
+            AND column_name IN ('subscription_id', 'group_id')
+          LIMIT 1
+        `);
+        
+        const metricsIdColumn = metricsColumnCheck.rows[0]?.column_name || 'subscription_id';
+        
+        const tableMetricsResult = await pool.query(`
+          SELECT 
+            table_name,
+            source_row_count,
+            target_row_count,
+            gap_size,
+            status,
+            last_replicated_at
+          FROM table_replication_metrics
+          WHERE ${metricsIdColumn} = $1
+            AND timestamp > NOW() - INTERVAL '1 hour'
+          ORDER BY timestamp DESC
+        `, [group.id]);
 
-      // Count tables with issues
-      const tablesWithIssues = tableMetricsResult.rows.filter(
-        (row) => row.status !== 'synced'
-      ).length;
+        // Count tables with REAL issues (only errors and warnings, not lagging)
+        // "lagging" is normal during replication - it's not an error
+        tablesWithIssues = tableMetricsResult.rows.filter(
+          (row) => row.status === 'error' || row.status === 'warning'
+        ).length;
+      }
 
       const fullStatus: ReplicationStatus = {
         subscriptionId: group.id,
