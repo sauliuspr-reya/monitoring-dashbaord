@@ -520,6 +520,7 @@ export default async function handler(
     // Provide more helpful error messages for common issues
     let errorMessage = error.message || 'Failed to create subscription';
     let errorDetails = error.detail || error.message;
+    let hint: string | undefined;
     
     if (error.message?.includes('password authentication failed')) {
       errorMessage = 'Database authentication failed';
@@ -527,14 +528,20 @@ export default async function handler(
     } else if (error.message?.includes('connection refused') || error.message?.includes('ECONNREFUSED')) {
       errorMessage = 'Database connection refused';
       errorDetails = 'Could not connect to the database. Please verify the host, port, and that the database server is running.';
-    } else if (error.message?.includes('timeout')) {
+    } else if (error.message?.includes('timeout') || error.message?.includes('timeout exceeded')) {
       errorMessage = 'Database connection timeout';
       errorDetails = 'Connection to the database timed out. Please check network connectivity and firewall settings.';
+      hint = 'The database may be overloaded or network connectivity is slow. Try again in a few moments.';
+    } else if (error.message?.includes('all replication slots are in use') || error.message?.includes('max_replication_slots')) {
+      errorMessage = 'All replication slots are in use';
+      errorDetails = 'Cannot create new replication slot because all available slots are in use.';
+      hint = 'Free up replication slots by dropping unused subscriptions or inactive slots. Run the free-replication-slots.sh script to check and free slots.';
     }
     
     res.status(500).json({
       error: errorMessage,
       details: errorDetails,
+      ...(hint && { hint }),
     });
   }
 }

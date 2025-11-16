@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getDbPool, createSourceTargetPool } from '@/lib/db/connection';
+import { getDbPool, createSourceTargetPool, retryQuery } from '@/lib/db/connection';
 import { MonitoringService } from '@/lib/services/monitoring.service';
 import { ConflictDetectionService } from '@/lib/services/conflict-detection.service';
 import { AlertingService } from '@/lib/services/alerting.service';
@@ -39,18 +39,24 @@ export default async function handler(
       const conflictService = new ConflictDetectionService();
       const alertingService = new AlertingService();
 
-      // Get replication status
-      const status = await monitoringService.getReplicationStatus(
-        sourcePool,
-        targetPool,
-        group.subscription_name,
-        group.slot_name
+      // Get replication status (with retry for connection errors)
+      const status = await retryQuery(() => 
+        monitoringService.getReplicationStatus(
+          sourcePool,
+          targetPool,
+          group.subscription_name,
+          group.slot_name
+        ),
+        3, // max retries
+        1000 // initial delay
       );
 
-      // Get table count
-      const tablesResult = await monitoringService.getPublicationTables(
-        sourcePool,
-        group.publication_name
+      // Get table count (with retry)
+      const tablesResult = await retryQuery(() => 
+        monitoringService.getPublicationTables(
+          sourcePool,
+          group.publication_name
+        )
       );
 
       // Get conflicts

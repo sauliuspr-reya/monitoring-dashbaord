@@ -125,7 +125,9 @@ export function getDbPool(): Pool {
     password,
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 30000, // Increased from 2s to 30s to match source/target pools
+    query_timeout: 60000, // 60 second query timeout
+    statement_timeout: 60000, // 60 second statement timeout
   };
 
   pool = new Pool(config);
@@ -145,14 +147,95 @@ export function getDbPool(): Pool {
 
 // Connection pool for source/target databases (for monitoring)
 export function createSourceTargetPool(connectionString: string): Pool {
-  return new Pool({
+  const pool = new Pool({
     connectionString,
     max: 10, // Increased from 5 to handle more concurrent queries
-    idleTimeoutMillis: 30000,
+    idleTimeoutMillis: 60000, // Increased to 60s to prevent premature connection closure
     connectionTimeoutMillis: 30000, // Increased from 5s to 30s for GCP Cloud SQL
     query_timeout: 60000, // 60 second query timeout
     statement_timeout: 60000, // 60 second statement timeout
   });
+
+  // Add error handler to handle connection terminations
+  pool.on('error', (err) => {
+    console.error('[db/connection] Source/Target pool error:', {
+      message: err.message,
+      code: (err as any).code,
+      // Log if it's a connection termination
+      isConnectionTerminated: err.message?.includes('terminated') || err.message?.includes('unexpectedly'),
+    });
+  });
+
+  // Handle connection terminations gracefully
+  pool.on('connect', (client) => {
+    client.on('error', (err) => {
+      console.error('[db/connection] Client error:', {
+        message: err.message,
+        code: (err as any).code,
+      });
+    });
+
+    client.on('end', () => {
+      console.log('[db/connection] Client connection ended');
+    });
+  });
+
+  return pool;
+}
+
+/**
+ * Retry a database query with exponential backoff
+ * Useful for handling transient connection errors
+ */
+export async function retryQuery<T>(
+  queryFn: () => Promise<T>,
+  maxRetries: number = 3,
+  initialDelay: number = 1000
+): Promise<T> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await queryFn();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Don't retry on certain errors
+      if (
+        error.message?.includes('password authentication failed') ||
+        error.message?.includes('syntax error') ||
+        error.message?.includes('permission denied') ||
+        error.code === '28P01' // Authentication failure
+      ) {
+        throw error;
+      }
+
+      // Check if it's a connection error worth retrying
+      const isConnectionError = 
+        error.message?.includes('timeout') ||
+        error.message?.includes('terminated') ||
+        error.message?.includes('ECONNRESET') ||
+        error.message?.includes('ECONNREFUSED') ||
+        error.message?.includes('unexpectedly');
+
+      if (!isConnectionError && attempt < maxRetries - 1) {
+        // Not a connection error, but we'll retry anyway for transient errors
+      } else if (!isConnectionError) {
+        // Not a connection error and we're out of retries
+        throw error;
+      }
+
+      // Calculate delay with exponential backoff
+      const delay = initialDelay * Math.pow(2, attempt);
+      console.warn(`[db/connection] Query failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms:`, error.message);
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  // If we get here, all retries failed
+  throw lastError || new Error('Query failed after retries');
 }
 
 export async function closeDbPool(): Promise<void> {

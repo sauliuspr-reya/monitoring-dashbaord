@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import { ReplicationStatus, TableStatus } from '../types';
-import { createSourceTargetPool } from '../db/connection';
+import { createSourceTargetPool, retryQuery } from '../db/connection';
 
 export class MonitoringService {
   /**
@@ -22,8 +22,8 @@ export class MonitoringService {
     };
 
     try {
-      // Check subscription status on target
-      const subResult = await targetPool.query(`
+      // Check subscription status on target (with retry)
+      const subResult = await retryQuery(() => targetPool.query(`
         SELECT 
           s.subenabled as enabled,
           ss.pid as worker_pid,
@@ -32,7 +32,7 @@ export class MonitoringService {
         FROM pg_subscription s
         LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
         WHERE s.subname = $1
-      `, [subscriptionName]);
+      `, [subscriptionName]));
 
       if (subResult.rows.length > 0) {
         const sub = subResult.rows[0];
@@ -41,8 +41,8 @@ export class MonitoringService {
         status.lastAppliedAt = sub.latest_end_time;
       }
 
-      // Check replication slot lag on source
-      const slotResult = await sourcePool.query(`
+      // Check replication slot lag on source (with retry)
+      const slotResult = await retryQuery(() => sourcePool.query(`
         SELECT 
           active,
           pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as slot_lag_bytes,
@@ -50,15 +50,15 @@ export class MonitoringService {
           confirmed_flush_lsn
         FROM pg_replication_slots
         WHERE slot_name = $1
-      `, [slotName]);
+      `, [slotName]));
 
       if (slotResult.rows.length > 0) {
         const slot = slotResult.rows[0];
         status.slotLagBytes = parseInt(slot.slot_lag_bytes || '0', 10);
       }
 
-      // Check replication connection lag on source
-      const replResult = await sourcePool.query(`
+      // Check replication connection lag on source (with retry)
+      const replResult = await retryQuery(() => sourcePool.query(`
         SELECT 
           state,
           sync_state,
@@ -66,7 +66,7 @@ export class MonitoringService {
           EXTRACT(EPOCH FROM (now() - write_lag))::int as lag_seconds
         FROM pg_stat_replication
         WHERE application_name = $1
-      `, [subscriptionName]);
+      `, [subscriptionName]));
 
       if (replResult.rows.length > 0) {
         const repl = replResult.rows[0];

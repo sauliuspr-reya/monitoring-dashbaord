@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getDbPool, createSourceTargetPool } from '@/lib/db/connection';
 import { ApplicationTrackingService } from '@/lib/services/application-tracking.service';
+import { processInBatches } from '@/lib/utils/batch';
 
 export default async function handler(
   req: NextApiRequest,
@@ -86,8 +87,12 @@ export default async function handler(
 
       // Get row counts for each table (from both source and target)
       // Use pg_class.reltuples for faster approximate counts on large tables
-      const tableStats = await Promise.all(
-        tables.map(async (tableName: string) => {
+      // Process in batches to avoid overwhelming the database connection pool
+      const BATCH_SIZE = 5; // Process 5 tables at a time to avoid connection exhaustion
+      const tableStats = await processInBatches(
+        tables,
+        BATCH_SIZE,
+        async (tableName: string) => {
           const [schema, table] = tableName.split('.');
           
           // Build properly quoted table name for queries
@@ -328,7 +333,7 @@ export default async function handler(
               error: error.message,
             };
           }
-        })
+        }
       );
 
       const safeTables = tableStats.filter(t => t.isSafeToReplicate).length;
