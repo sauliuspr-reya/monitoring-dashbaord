@@ -20,7 +20,13 @@ interface TableStatus {
   status: string;
   hasReplicationRisk: boolean;
   isSafeToReplicate: boolean;
-  sourceSize?: number;
+  sourceTableSize?: number;
+  sourceIndexSize?: number;
+  sourceTotalSize?: number;
+  targetTableSize?: number;
+  targetIndexSize?: number;
+  targetTotalSize?: number;
+  isEstimate?: boolean;
   writersOnSource?: string[];
   writersOnTarget?: string[];
 }
@@ -565,10 +571,24 @@ export default function ReplicationStatus({
                       {table.tableName}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">
-                      {table.sourceRowCount.toLocaleString()}
+                      <div className="flex flex-col items-end">
+                        <span>{table.sourceRowCount.toLocaleString()}</span>
+                        {table.isEstimate && (
+                          <span className="text-xs text-gray-400" title="Estimate (reltuples) - may be stale after restore. Run ANALYZE to update.">
+                            ~
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-900">
-                      {table.targetRowCount.toLocaleString()}
+                      <div className="flex flex-col items-end">
+                        <span>{table.targetRowCount.toLocaleString()}</span>
+                        {table.isEstimate && (
+                          <span className="text-xs text-gray-400" title="Estimate (reltuples) - may be stale after restore. Run ANALYZE to update.">
+                            ~
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className={`px-4 py-3 whitespace-nowrap text-sm text-right ${
                       table.rowDiff > 0 ? 'text-red-600' : table.rowDiff < 0 ? 'text-yellow-600' : 'text-gray-600'
@@ -587,7 +607,16 @@ export default function ReplicationStatus({
                       </span>
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-right text-gray-600">
-                      {table.sourceSize ? formatBytes(table.sourceSize) : '—'}
+                      {table.sourceTotalSize ? (
+                        <div className="flex flex-col items-end">
+                          <span title="Table + Indexes">{formatBytes(table.sourceTotalSize)}</span>
+                          {table.sourceIndexSize > 0 && (
+                            <span className="text-xs text-gray-500" title="Index size">
+                              ({formatBytes(table.sourceIndexSize)} idx)
+                            </span>
+                          )}
+                        </div>
+                      ) : '—'}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap text-sm">
                       <div className="flex flex-col gap-1">

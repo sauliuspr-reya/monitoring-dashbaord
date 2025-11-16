@@ -104,20 +104,25 @@ export class MonitoringService {
     };
 
     try {
-      // OPTIMIZATION: Use estimates instead of COUNT(*) - much faster and accurate enough
+      // OPTIMIZATION: Use pg_stat_user_tables.n_live_tup (more accurate) or reltuples (fallback)
+      // n_live_tup is updated by autovacuum and is more accurate than reltuples
       // COUNT(*) is too expensive on large tables and kills database performance
       const [sourceResult, targetResult] = await Promise.all([
         sourcePool.query(`
-          SELECT COALESCE(reltuples::bigint, 0) as estimate
-          FROM pg_class
-          WHERE relname = $1 
-            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+          SELECT COALESCE(s.n_live_tup::bigint, c.reltuples::bigint, 0) as estimate
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid AND s.schemaname = n.nspname
+          WHERE c.relname = $1 
+            AND n.nspname = $2
         `, [tableName, schemaName]),
         targetPool.query(`
-          SELECT COALESCE(reltuples::bigint, 0) as estimate
-          FROM pg_class
-          WHERE relname = $1 
-            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
+          SELECT COALESCE(s.n_live_tup::bigint, c.reltuples::bigint, 0) as estimate
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid AND s.schemaname = n.nspname
+          WHERE c.relname = $1 
+            AND n.nspname = $2
         `, [tableName, schemaName]).catch(() => ({ rows: [{ estimate: '0' }] })),
       ]);
 

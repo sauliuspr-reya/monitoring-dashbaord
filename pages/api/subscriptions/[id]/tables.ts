@@ -110,16 +110,20 @@ export default async function handler(
       // This reduces from 5 queries per table to 2 bulk queries + only COUNT(*) for small tables
       
       // Step 1: Get ALL source table estimates and sizes in ONE query
+      // Include separate metrics for table size, index size, and total size
       const step3Start = Date.now();
-      const sourceStatsMap = new Map<string, { estimate: number; size: number }>();
+      const sourceStatsMap = new Map<string, { estimate: number; tableSize: number; indexSize: number; totalSize: number }>();
       try {
         const sourceStatsResult = await sourcePool.query(`
           SELECT 
             n.nspname || '.' || c.relname as table_name,
-            c.reltuples::bigint as estimated_rows,
-            pg_total_relation_size(c.oid) as size
+            COALESCE(s.n_live_tup::bigint, c.reltuples::bigint, 0) as estimated_rows,
+            pg_relation_size(c.oid) as table_size,
+            pg_indexes_size(c.oid) as index_size,
+            pg_total_relation_size(c.oid) as total_size
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid AND s.schemaname = n.nspname
           WHERE c.relkind = 'r'
             AND n.nspname || '.' || c.relname = ANY($1)
         `, [tables]);
@@ -127,7 +131,9 @@ export default async function handler(
         for (const row of sourceStatsResult.rows) {
           sourceStatsMap.set(row.table_name, {
             estimate: parseInt(row.estimated_rows || '0', 10),
-            size: parseInt(row.size || '0', 10),
+            tableSize: parseInt(row.table_size || '0', 10),
+            indexSize: parseInt(row.index_size || '0', 10),
+            totalSize: parseInt(row.total_size || '0', 10),
           });
         }
         console.log(`[subscriptions/${id}/tables] Step 3 (source bulk stats): ${Date.now() - step3Start}ms - Fetched ${sourceStatsMap.size} tables`);
@@ -135,16 +141,20 @@ export default async function handler(
         console.error(`[subscriptions/${id}/tables] Failed to fetch bulk source stats:`, err.message);
       }
 
-      // Step 2: Get ALL target table estimates in ONE query
+      // Step 2: Get ALL target table estimates and sizes in ONE query
       const step4Start = Date.now();
-      const targetStatsMap = new Map<string, { estimate: number }>();
+      const targetStatsMap = new Map<string, { estimate: number; tableSize: number; indexSize: number; totalSize: number }>();
       try {
         const targetStatsResult = await targetPool.query(`
           SELECT 
             n.nspname || '.' || c.relname as table_name,
-            c.reltuples::bigint as estimated_rows
+            COALESCE(s.n_live_tup::bigint, c.reltuples::bigint, 0) as estimated_rows,
+            pg_relation_size(c.oid) as table_size,
+            pg_indexes_size(c.oid) as index_size,
+            pg_total_relation_size(c.oid) as total_size
           FROM pg_class c
           JOIN pg_namespace n ON n.oid = c.relnamespace
+          LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid AND s.schemaname = n.nspname
           WHERE c.relkind = 'r'
             AND n.nspname || '.' || c.relname = ANY($1)
         `, [tables]);
@@ -152,6 +162,9 @@ export default async function handler(
         for (const row of targetStatsResult.rows) {
           targetStatsMap.set(row.table_name, {
             estimate: parseInt(row.estimated_rows || '0', 10),
+            tableSize: parseInt(row.table_size || '0', 10),
+            indexSize: parseInt(row.index_size || '0', 10),
+            totalSize: parseInt(row.total_size || '0', 10),
           });
         }
         console.log(`[subscriptions/${id}/tables] Step 4 (target bulk stats): ${Date.now() - step4Start}ms - Fetched ${targetStatsMap.size} tables`);
@@ -275,14 +288,23 @@ export default async function handler(
         
         try {
           // Get stats from bulk queries
-          const sourceStats = sourceStatsMap.get(tableName) || { estimate: 0, size: 0 };
-          const targetStats = targetStatsMap.get(tableName) || { estimate: 0 };
+          const sourceStats = sourceStatsMap.get(tableName) || { estimate: 0, tableSize: 0, indexSize: 0, totalSize: 0 };
+          const targetStats = targetStatsMap.get(tableName) || { estimate: 0, tableSize: 0, indexSize: 0, totalSize: 0 };
           const exactCounts = exactCountsMap.get(tableName);
           
           // Use exact count if available, otherwise use estimate
+          // NOTE: reltuples estimates can be stale after restore - run ANALYZE to update them
           const sourceCount = exactCounts?.source ?? sourceStats.estimate;
           const targetCount = exactCounts?.target ?? targetStats.estimate;
-          const sourceSize = sourceStats.size;
+          
+          // Size metrics: separate table size, index size, and total
+          const sourceTableSize = sourceStats.tableSize || 0;
+          const sourceIndexSize = sourceStats.indexSize || 0;
+          const sourceTotalSize = sourceStats.totalSize || 0;
+          const targetTableSize = targetStats.tableSize || 0;
+          const targetIndexSize = targetStats.indexSize || 0;
+          const targetTotalSize = targetStats.totalSize || 0;
+          
           // Mark as estimate if we didn't get exact count (most tables use estimates)
           const useEstimate = !exactCounts;
 
@@ -349,7 +371,12 @@ export default async function handler(
               sourceRowCount: sourceCount,
               targetRowCount: targetCount,
               rowDiff: sourceCount - targetCount,
-              sourceSize,
+              sourceTableSize,
+              sourceIndexSize,
+              sourceTotalSize,
+              targetTableSize,
+              targetIndexSize,
+              targetTotalSize,
               status,
               isEstimate: useEstimate,
               writersOnSource: sourceWriters,
@@ -368,9 +395,15 @@ export default async function handler(
               sourceRowCount: 0,
               targetRowCount: 0,
               rowDiff: 0,
-              sourceSize: 0,
+              sourceTableSize: 0,
+              sourceIndexSize: 0,
+              sourceTotalSize: 0,
+              targetTableSize: 0,
+              targetIndexSize: 0,
+              targetTotalSize: 0,
               status: 'error',
               error: error.message,
+              isEstimate: true,
             };
           }
       });
