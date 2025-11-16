@@ -183,9 +183,13 @@ export function createSourceTargetPool(connectionString: string): Pool {
       });
     });
 
-    client.on('end', () => {
-      console.log('[db/connection] Client connection ended');
-    });
+    // Only log connection end in debug mode (too noisy otherwise)
+    // Connections ending is normal - they're closed after queries complete
+    if (process.env.DEBUG_DB_CONNECTIONS === 'true') {
+      client.on('end', () => {
+        console.log('[db/connection] Client connection ended (normal)');
+      });
+    }
   });
 
   return pool;
