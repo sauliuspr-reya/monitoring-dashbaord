@@ -279,7 +279,7 @@ export default function ReplicationStatus({
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Replication Status</h2>
           <button
-            onClick={loadData}
+            onClick={() => loadData(false)}
             className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
           >
             Refresh
@@ -610,7 +610,7 @@ export default function ReplicationStatus({
                       {table.sourceTotalSize ? (
                         <div className="flex flex-col items-end">
                           <span title="Table + Indexes">{formatBytes(table.sourceTotalSize)}</span>
-                          {table.sourceIndexSize > 0 && (
+                          {table.sourceIndexSize && table.sourceIndexSize > 0 && (
                             <span className="text-xs text-gray-500" title="Index size">
                               ({formatBytes(table.sourceIndexSize)} idx)
                             </span>
