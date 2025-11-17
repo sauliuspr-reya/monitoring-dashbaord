@@ -270,11 +270,15 @@ export default function BackupModal({
 
   // Normalize table name for matching (remove quotes, schema prefix, lowercase)
   const normalizeTableName = (name: string): string => {
-    return name
+    const cleaned = name
+      .trim()
       .replace(/^public\./i, '')
-      .replace(/^["']|["']$/g, '')
-      .toLowerCase()
-      .trim();
+      .replace(/^["'`]/, '')
+      .replace(/["'`]$/, '');
+
+    return cleaned
+      .replace(/[\s._-]+/g, '')
+      .toLowerCase();
   };
 
   // Load tables from pasted text

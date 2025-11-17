@@ -90,11 +90,6 @@ export default async function handler(
       return res.status(400).json({ error: 'At least one table must be selected from the publications' });
     }
 
-    // Determine tables to include based on mode
-    const tables = excludeTables && excludeTables.length > 0 
-      ? [] // In exclude mode, we'll create FOR ALL TABLES publication
-      : (customTables || []);
-
     // Generate names from subscription name (sanitize for SQL identifiers)
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
     const subscriptionName = `${sanitizedName}_subscription`;
@@ -145,6 +140,7 @@ export default async function handler(
       // Step 1: Handle publications
       let finalPublicationName: string = ''; // For database storage
       let escapedPubName: string = ''; // For CREATE SUBSCRIPTION command
+      let tables: string[] = []; // Tables that will be replicated
       
       if (useExistingPublication) {
         // Verify all existing publications exist
@@ -222,6 +218,9 @@ export default async function handler(
               });
             }
             
+            // Set tables to included tables
+            tables = includedTables;
+            
             // Create publication with included tables
             const tableList = includedTables.map((t: string) => {
               const escaped = t.replace(/"/g, '""');
@@ -230,9 +229,10 @@ export default async function handler(
             await sourcePool.query(`
               CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
             `);
-          } else if (tables && tables.length > 0) {
+          } else if (customTables && customTables.length > 0) {
             // Create publication for specific tables
-            const tableList = tables.map((t: string) => {
+            tables = customTables;
+            const tableList = customTables.map((t: string) => {
               const escaped = t.replace(/"/g, '""');
               return `"${escaped}"`;
             }).join(', ');
@@ -241,31 +241,47 @@ export default async function handler(
             `);
           } else {
             // Fallback: create for all tables
+            const allTablesResult = await sourcePool.query(`
+              SELECT schemaname || '.' || tablename AS table_name
+              FROM pg_tables
+              WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              ORDER BY schemaname, tablename
+            `);
+            tables = allTablesResult.rows.map((r: any) => r.table_name);
+            
             await sourcePool.query(`
               CREATE PUBLICATION ${escapedPubName} FOR ALL TABLES
             `);
           }
         } else {
-          // Publication exists - check if all tables are in it
+          // Publication exists - get all tables from it
           const pubTablesResult = await sourcePool.query(`
-            SELECT tablename FROM pg_publication_tables WHERE pubname = $1
+            SELECT schemaname || '.' || tablename AS table_name
+            FROM pg_publication_tables
+            WHERE pubname = $1
           `, [publicationName]);
+          tables = pubTablesResult.rows.map((r: any) => r.table_name);
           
-          const existingPubTables = pubTablesResult.rows.map((r: any) => r.tablename);
-          const missingTables = tables.filter((t: string) => !existingPubTables.includes(t));
-          
-          // Add any missing tables to the existing publication
-          if (missingTables.length > 0) {
-            for (const table of missingTables) {
-              const escapedTable = `"${table.replace(/"/g, '""')}"`;
-              try {
-                await sourcePool.query(`
-                  ALTER PUBLICATION ${escapedPubName} ADD TABLE ${escapedTable}
-                `);
-              } catch (alterError: any) {
-                console.warn(`Failed to add table ${table} to publication:`, alterError.message);
-                // Continue with other tables
+          // If customTables provided, add missing tables to publication
+          if (customTables && customTables.length > 0) {
+            const existingPubTables = pubTablesResult.rows.map((r: any) => r.table_name);
+            const missingTables = customTables.filter((t: string) => !existingPubTables.includes(t));
+            
+            // Add any missing tables to the existing publication
+            if (missingTables.length > 0) {
+              for (const table of missingTables) {
+                const escapedTable = `"${table.replace(/"/g, '""')}"`;
+                try {
+                  await sourcePool.query(`
+                    ALTER PUBLICATION ${escapedPubName} ADD TABLE ${escapedTable}
+                  `);
+                } catch (alterError: any) {
+                  console.warn(`Failed to add table ${table} to publication:`, alterError.message);
+                  // Continue with other tables
+                }
               }
+              // Update tables list to include newly added tables
+              tables = [...new Set([...tables, ...missingTables])];
             }
           }
         }
@@ -315,6 +331,7 @@ export default async function handler(
         }
         
         // If customTables are provided, only check those
+        // NOTE: We'll create a new publication with only selected tables
         if (customTables && customTables.length > 0) {
           tablesToCheck = customTables;
         }
@@ -446,12 +463,58 @@ export default async function handler(
       let publicationList: string;
       
       if (useExistingPublication) {
-        // Multiple publications: escape each and join with commas
-        const escapedPubNames = publicationNames.map((pubName: string) => 
-          `"${pubName.replace(/"/g, '""')}"`
-        );
-        publicationList = escapedPubNames.join(', ');
-        finalPublicationName = publicationNames.join(','); // Store as comma-separated
+        // If customTables are provided, create a NEW publication with only selected tables
+        // This allows filtering tables when using existing publications
+        if (customTables && customTables.length > 0) {
+          // Create a new publication with only the selected tables
+          const filteredPubName = `${subscriptionName}_filtered_publication`;
+          const escapedFilteredPubName = filteredPubName.replace(/"/g, '""');
+          
+          // Check if filtered publication already exists
+          const filteredPubCheck = await sourcePool.query(`
+            SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
+          `, [filteredPubName]);
+          
+          if (filteredPubCheck.rows[0].count === '0') {
+            // Create new publication with only selected tables
+            const tableList = customTables.map((t: string) => {
+              const escaped = t.replace(/"/g, '""');
+              return `"${escaped}"`;
+            }).join(', ');
+            
+            await sourcePool.query(`
+              CREATE PUBLICATION "${escapedFilteredPubName}" FOR TABLE ${tableList}
+            `);
+            
+            console.log(`Created filtered publication '${filteredPubName}' with ${customTables.length} tables`);
+          }
+          
+          // Use the filtered publication instead of the original
+          publicationList = `"${escapedFilteredPubName}"`;
+          finalPublicationName = filteredPubName;
+          // Set tables to the filtered list
+          tables = customTables;
+        } else {
+          // No customTables - use existing publications as-is
+          const escapedPubNames = publicationNames.map((pubName: string) => 
+            `"${pubName.replace(/"/g, '""')}"`
+          );
+          publicationList = escapedPubNames.join(', ');
+          finalPublicationName = publicationNames.join(','); // Store as comma-separated
+          
+          // Get all tables from all publications
+          const allPubTables: string[] = [];
+          for (const pubName of publicationNames) {
+            const pubTablesResult = await sourcePool.query(`
+              SELECT schemaname || '.' || tablename AS table_name
+              FROM pg_publication_tables
+              WHERE pubname = $1
+            `, [pubName]);
+            const pubTables = pubTablesResult.rows.map((r: any) => r.table_name);
+            allPubTables.push(...pubTables);
+          }
+          tables = [...new Set(allPubTables)]; // Remove duplicates
+        }
       } else {
         // Single new publication - escapedPubName already defined above
         publicationList = escapedPubName;
@@ -492,13 +555,20 @@ export default async function handler(
 
       // Step 7: Save table list
       const subscriptionId = result.rows[0].id;
-      for (const table of tables) {
+      // Use customTables if provided (filtered selection), otherwise use all tables from publication
+      const tablesToSave = (useExistingPublication && customTables && customTables.length > 0) 
+        ? customTables 
+        : tables;
+      
+      for (const table of tablesToSave) {
+        // Extract just the table name (without schema) for storage
+        const tableNameOnly = table.includes('.') ? table.split('.')[1] : table;
         await monitoringPool.query(`
           INSERT INTO subscription_tables (
             subscription_id, table_name, schema_name, enabled
           ) VALUES ($1, $2, 'public', true)
           ON CONFLICT DO NOTHING
-        `, [subscriptionId, table]);
+        `, [subscriptionId, tableNameOnly]);
       }
 
       res.status(201).json({
@@ -507,7 +577,7 @@ export default async function handler(
         publicationName: finalPublicationName,
         subscriptionName,
         slotName,
-        tables: tables.length,
+        tables: tablesToSave.length,
         message: 'Subscription created successfully',
       });
     } finally {
