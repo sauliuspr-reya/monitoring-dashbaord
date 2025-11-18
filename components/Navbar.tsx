@@ -6,6 +6,7 @@ export default function Navbar() {
 
   const navItems = [
     { href: '/tables', label: 'Tables', icon: '📊' },
+    { href: '/verification', label: 'Verification', icon: '🔍' },
     { href: '/services', label: 'Services', icon: '⚙️' },
     { type: 'separator' },
     { href: '/backup', label: 'Backup & Restore', icon: '💾' },
@@ -21,6 +22,9 @@ export default function Navbar() {
     }
     if (href === '/services') {
       return router.pathname.startsWith('/services');
+    }
+    if (href === '/verification') {
+      return router.pathname.startsWith('/verification');
     }
     if (href === '/backup') {
       return router.pathname.startsWith('/backup') || router.pathname.startsWith('/backups');

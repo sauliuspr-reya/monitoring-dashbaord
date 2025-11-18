@@ -8,13 +8,15 @@
     "start": "next start -p ${PORT:-3000}",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "worker": "ts-node lib/worker/metrics-collector.ts"
+    "worker": "ts-node lib/worker/metrics-collector.ts",
+    "verification-worker": "tsx lib/worker/verification-worker.ts"
   },
   "dependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.10.9",
     "clsx": "^2.0.0",
     "date-fns": "^2.30.0",
+    "dotenv": "^17.2.3",
     "js-yaml": "^4.1.0",
     "lucide-react": "^0.294.0",
     "next": "^14.0.0",
@@ -35,6 +37,7 @@
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
     "ts-node": "^10.9.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.3.3"
   }
 }

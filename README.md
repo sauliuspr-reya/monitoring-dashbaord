@@ -7,6 +7,7 @@ A Next.js dashboard for monitoring PostgreSQL logical replication between RDS an
 - **Table Monitoring**: View all tables from source and target databases with row counts and sizes
 - **Replication Status**: Track subscription status, lag, and worker health
 - **Conflict Detection**: Identify and resolve replication conflicts
+- **Data Integrity Verification**: Row-by-row comparison to detect mismatches and gaps (NEW!)
 - **Backup Management**: Create and restore database backups
 - **Service Tracking**: Monitor which services write to which tables
 - **Goldsky Integration**: Track tables indexed by Goldsky pipelines
