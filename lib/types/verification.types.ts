@@ -58,6 +58,7 @@ export interface VerificationConfig {
   tableName: string;
   batchSize: number;
   cooldownMs: number;
+  primaryKeyColumn?: string;
 }
 
 export interface VerificationProgress {

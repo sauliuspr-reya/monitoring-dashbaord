@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Navbar from '../../components/Navbar';
-import { Play, Square, AlertCircle, CheckCircle, Clock, XCircle } from 'lucide-react';
+import { Play, Square, AlertCircle, CheckCircle, Clock, XCircle, Trash2 } from 'lucide-react';
 
 interface VerificationJob {
   id: number;
@@ -27,6 +27,7 @@ export default function VerificationDashboard() {
   const [selectedTable, setSelectedTable] = useState('');
   const [batchSize, setBatchSize] = useState(1000);
   const [cooldownMs, setCooldownMs] = useState(100);
+  const [primaryKeyOverride, setPrimaryKeyOverride] = useState('');
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState<number | null>(null);
   const [resuming, setResuming] = useState<number | null>(null);
@@ -34,6 +35,9 @@ export default function VerificationDashboard() {
   const [resumeJob, setResumeJob] = useState<{ tableName: string; id: number; batchSize: number; cooldownMs: number } | null>(null);
   const [showStopModal, setShowStopModal] = useState(false);
   const [stopJob, setStopJob] = useState<{ tableName: string; id: number } | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteJob, setDeleteJob] = useState<{ tableName: string; id: number } | null>(null);
+  const [deleting, setDeleting] = useState<number | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -68,6 +72,7 @@ export default function VerificationDashboard() {
           tableName: selectedTable,
           batchSize,
           cooldownMs,
+          primaryKeyColumn: primaryKeyOverride || undefined,
         }),
       });
 
@@ -80,6 +85,7 @@ export default function VerificationDashboard() {
 
       setShowStartModal(false);
       setSelectedTable('');
+      setPrimaryKeyOverride('');
       await fetchJobs();
     } catch (error) {
       console.error('Failed to start verification:', error);
@@ -163,6 +169,40 @@ export default function VerificationDashboard() {
       alert('Failed to resume verification');
     } finally {
       setResuming(null);
+    }
+  };
+
+  const handleDeleteClick = (tableName: string, jobId: number) => {
+    setDeleteJob({ tableName, id: jobId });
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteVerification = async () => {
+    if (!deleteJob) return;
+
+    setDeleting(deleteJob.id);
+    try {
+      const response = await fetch('/api/verification/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tableName: deleteJob.tableName }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || 'Failed to delete verification');
+        return;
+      }
+
+      setShowDeleteModal(false);
+      setDeleteJob(null);
+      await fetchJobs();
+    } catch (error) {
+      console.error('Failed to delete verification:', error);
+      alert('Failed to delete verification');
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -283,7 +323,7 @@ export default function VerificationDashboard() {
           <div className="bg-white rounded-lg shadow p-12 text-center">
             <AlertCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <p className="text-gray-600">No verifications found</p>
-            <p className="text-sm text-gray-500 mt-2">Click "Start New Verification" to begin</p>
+            <p className="text-sm text-gray-500 mt-2">Click &quot;Start New Verification&quot; to begin</p>
           </div>
         ) : (
           <div className="space-y-4">
@@ -357,13 +397,33 @@ export default function VerificationDashboard() {
                       </button>
                     )}
                     {job.status === 'stopped' && (
+                      <>
+                        <button
+                          onClick={() => handleResumeClick(job)}
+                          disabled={resuming === job.id}
+                          className="inline-flex items-center px-3 py-2 border border-green-300 shadow-sm text-sm leading-4 font-medium rounded-md text-green-700 bg-white hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+                        >
+                          <Play className="w-4 h-4 mr-1" />
+                          {resuming === job.id ? 'Resuming...' : 'Resume'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteClick(job.tableName, job.id)}
+                          disabled={deleting === job.id}
+                          className="inline-flex items-center px-3 py-2 border border-red-300 shadow-sm text-sm leading-4 font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
+                        >
+                          <Trash2 className="w-4 h-4 mr-1" />
+                          {deleting === job.id ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </>
+                    )}
+                    {(job.status === 'completed' || job.status === 'error') && (
                       <button
-                        onClick={() => handleResumeClick(job)}
-                        disabled={resuming === job.id}
-                        className="inline-flex items-center px-3 py-2 border border-green-300 shadow-sm text-sm leading-4 font-medium rounded-md text-green-700 bg-white hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+                        onClick={() => handleDeleteClick(job.tableName, job.id)}
+                        disabled={deleting === job.id}
+                        className="inline-flex items-center px-3 py-2 border border-red-300 shadow-sm text-sm leading-4 font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
                       >
-                        <Play className="w-4 h-4 mr-1" />
-                        {resuming === job.id ? 'Resuming...' : 'Resume'}
+                        <Trash2 className="w-4 h-4 mr-1" />
+                        {deleting === job.id ? 'Deleting...' : 'Delete'}
                       </button>
                     )}
                   </div>
@@ -392,6 +452,22 @@ export default function VerificationDashboard() {
                   placeholder="e.g., orders"
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Primary Key Column <span className="text-gray-500 text-xs">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={primaryKeyOverride}
+                  onChange={(e) => setPrimaryKeyOverride(e.target.value)}
+                  placeholder="e.g., id (leave empty for auto-detect)"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  If specified, this column will be used instead of auto-detection
+                </p>
               </div>
 
               <div>
@@ -431,7 +507,10 @@ export default function VerificationDashboard() {
 
             <div className="mt-6 flex space-x-3">
               <button
-                onClick={() => setShowStartModal(false)}
+                onClick={() => {
+                  setShowStartModal(false);
+                  setPrimaryKeyOverride('');
+                }}
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
               >
                 Cancel
@@ -550,6 +629,50 @@ export default function VerificationDashboard() {
                 className="flex-1 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
               >
                 {stopping === stopJob.id ? 'Stopping...' : 'Stop Verification'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Verification Modal */}
+      {showDeleteModal && deleteJob && (
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <div className="flex items-center mb-4">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                <Trash2 className="w-6 h-6 text-red-600" />
+              </div>
+              <h3 className="ml-4 text-lg font-medium text-gray-900">Delete Verification</h3>
+            </div>
+            
+            <div className="mb-6">
+              <p className="text-sm text-gray-600 mb-3">
+                Are you sure you want to delete the verification for <strong>{deleteJob.tableName}</strong>?
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-md p-3">
+                <p className="text-sm text-red-800">
+                  <strong>Warning:</strong> This will permanently delete all verification data including mismatches and gaps. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex space-x-3">
+              <button
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  setDeleteJob(null);
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteVerification}
+                disabled={deleting === deleteJob.id}
+                className="flex-1 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
+              >
+                {deleting === deleteJob.id ? 'Deleting...' : 'Delete Permanently'}
               </button>
             </div>
           </div>

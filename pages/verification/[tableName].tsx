@@ -58,6 +58,7 @@ export default function VerificationDetail() {
       const interval = setInterval(fetchDetails, 5000); // Refresh every 5 seconds
       return () => clearInterval(interval);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableName, mismatchPage, gapPage]);
 
   const fetchDetails = async () => {

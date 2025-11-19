@@ -53,7 +53,7 @@ export class VerificationService {
    * Start a new verification job or resume an existing one
    */
   async startVerification(config: VerificationConfig): Promise<VerificationJob> {
-    const { tableName, batchSize, cooldownMs } = config;
+    const { tableName, batchSize, cooldownMs, primaryKeyColumn } = config;
 
     // Check if job already exists
     const existingJob = await this.getJobByTableName(tableName);
@@ -87,20 +87,28 @@ export class VerificationService {
       return existingJob;
     }
 
-    // Create new job - need to detect PK first
-    // Get source connection to detect PK
-    const sourceUrl = process.env.SOURCE_DATABASE_URL;
-    if (!sourceUrl) {
-      throw new Error('SOURCE_DATABASE_URL not configured');
-    }
+    // Create new job - use provided PK or auto-detect
+    let pkColumnName: string;
 
-    const sourcePool = createSourceTargetPool(sourceUrl);
-    let pkInfo: { column: string; dataType: string };
+    if (primaryKeyColumn) {
+      // Use the provided primary key column
+      pkColumnName = primaryKeyColumn;
+    } else {
+      // Auto-detect primary key from source database
+      const sourceUrl = process.env.SOURCE_DATABASE_URL;
+      if (!sourceUrl) {
+        throw new Error('SOURCE_DATABASE_URL not configured');
+      }
 
-    try {
-      pkInfo = await this.detectPrimaryKey(sourcePool, tableName);
-    } finally {
-      await sourcePool.end();
+      const sourcePool = createSourceTargetPool(sourceUrl);
+      let pkInfo: { column: string; dataType: string };
+
+      try {
+        pkInfo = await this.detectPrimaryKey(sourcePool, tableName);
+        pkColumnName = pkInfo.column;
+      } finally {
+        await sourcePool.end();
+      }
     }
 
     const result = await this.monitoringPool.query(
@@ -108,7 +116,7 @@ export class VerificationService {
        (table_name, status, batch_size, cooldown_ms, primary_key_column)
        VALUES ($1, 'running', $2, $3, $4)
        RETURNING *`,
-      [tableName, batchSize, cooldownMs, pkInfo.column]
+      [tableName, batchSize, cooldownMs, pkColumnName]
     );
 
     return result.rows[0];
@@ -182,9 +190,10 @@ export class VerificationService {
     // Keyset pagination: Use simple > comparison without explicit casting
     // PostgreSQL handles implicit type coercion (TEXT → native column type)
     // This works for all PK types: INT, BIGINT, VARCHAR, UUID, etc.
+    // Skip NULL primary keys to avoid comparison issues
     const whereClause = lastPkValue 
-      ? `WHERE ${pkColumn} > $1` 
-      : '';
+      ? `WHERE ${pkColumn} IS NOT NULL AND ${pkColumn} > $1` 
+      : `WHERE ${pkColumn} IS NOT NULL`;
     const params: any[] = lastPkValue ? [lastPkValue, batchSize] : [batchSize];
     const limitParamIndex = lastPkValue ? '$2' : '$1';
 
@@ -212,6 +221,7 @@ export class VerificationService {
   /**
    * Fetch rows from target database by primary key list
    * Optimized using ANY() for batch lookup
+   * Note: pkValues come from source query which already filters out NULLs
    */
   async fetchTargetRows(
     pool: Pool,
@@ -225,6 +235,7 @@ export class VerificationService {
 
     // Use ANY() for efficient batch lookup with index
     // PostgreSQL handles implicit type coercion for the array
+    // No need to filter NULLs here - they're already excluded from pkValues
     const query = `
       SELECT 
         ${pkColumn} as pk,
@@ -450,13 +461,24 @@ export class VerificationService {
   }
 
   /**
-   * Delete a verification job and all related data
+   * Delete a verification job and all related data by job ID
    */
   async deleteJob(jobId: number): Promise<void> {
     // CASCADE will automatically delete mismatches and gaps
     await this.monitoringPool.query(
       'DELETE FROM table_verification_jobs WHERE id = $1',
       [jobId]
+    );
+  }
+
+  /**
+   * Delete a verification job and all related data by table name
+   */
+  async deleteJobByTableName(tableName: string): Promise<void> {
+    // CASCADE will automatically delete mismatches and gaps
+    await this.monitoringPool.query(
+      'DELETE FROM table_verification_jobs WHERE table_name = $1',
+      [tableName]
     );
   }
 }
