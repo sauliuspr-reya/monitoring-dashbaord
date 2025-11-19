@@ -678,12 +678,52 @@ export class BackupTaskStreamingService extends BackupTaskService {
                 const dropCommands: string[] = [];
                 
                 // Drop triggers first (they depend on tables)
-                for (const trigger of triggers) {
+                // We need to drop triggers per table, so we'll drop all triggers on each table
+                // Extract trigger-table pairs from backup content
+                const triggerTablePairs: Array<{trigger: string, table: string}> = [];
+                for (const triggerMatch of triggerMatches) {
+                  // Extract trigger name and table name from CREATE TRIGGER ... ON table
+                  const triggerTableMatch = triggerMatch.match(/CREATE\s+(?:OR REPLACE\s+)?TRIGGER\s+([^\s]+)\s+.*?\s+ON\s+(?:public\.)?([^\s(]+)/i);
+                  if (triggerTableMatch) {
+                    const triggerName = triggerTableMatch[1].replace(/"/g, '').trim();
+                    let tableName = triggerTableMatch[2].replace(/"/g, '').trim();
+                    if (tableName.includes('.')) {
+                      tableName = tableName.split('.').pop() || tableName;
+                    }
+                    triggerTablePairs.push({trigger: triggerName, table: tableName});
+                  }
+                }
+                
+                // Drop each trigger on its specific table
+                for (const {trigger, table} of triggerTablePairs) {
                   const cleanTrigger = trigger.replace(/^"|"$/g, '');
+                  const cleanTable = table.replace(/^"|"$/g, '');
                   const quotedTrigger = (cleanTrigger !== cleanTrigger.toLowerCase() || /[^a-z0-9_]/.test(cleanTrigger))
                     ? `"${cleanTrigger.replace(/"/g, '""')}"`
                     : cleanTrigger;
-                  dropCommands.push(`DROP TRIGGER IF EXISTS ${quotedTrigger} ON public.* CASCADE;`);
+                  const quotedTable = (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable))
+                    ? `"${cleanTable.replace(/"/g, '""')}"`
+                    : cleanTable;
+                  dropCommands.push(`DROP TRIGGER IF EXISTS ${quotedTrigger} ON public.${quotedTable} CASCADE;`);
+                }
+                
+                // Also drop any remaining triggers that weren't matched (fallback)
+                const matchedTriggers = new Set(triggerTablePairs.map(tp => tp.trigger));
+                for (const trigger of triggers) {
+                  if (!matchedTriggers.has(trigger)) {
+                    // Try to drop on all tables (less efficient but safer)
+                    for (const table of tables) {
+                      const cleanTrigger = trigger.replace(/^"|"$/g, '');
+                      const cleanTable = table.replace(/^"|"$/g, '');
+                      const quotedTrigger = (cleanTrigger !== cleanTrigger.toLowerCase() || /[^a-z0-9_]/.test(cleanTrigger))
+                        ? `"${cleanTrigger.replace(/"/g, '""')}"`
+                        : cleanTrigger;
+                      const quotedTable = (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable))
+                        ? `"${cleanTable.replace(/"/g, '""')}"`
+                        : cleanTable;
+                      dropCommands.push(`DROP TRIGGER IF EXISTS ${quotedTrigger} ON public.${quotedTable} CASCADE;`);
+                    }
+                  }
                 }
                 
                 // Drop functions (they may be used by triggers)
@@ -708,9 +748,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
                 
                 const allDropCommands = dropCommands.join('\n');
                 
-                // Execute truncate via psql
+                // Execute drop via psql
                 // Use -f - to read from stdin for large command strings
-                const truncateArgs = [
+                const dropArgs = [
                   '-h', conn.host,
                   '-p', conn.port.toString(),
                   '-U', conn.user,
@@ -718,20 +758,22 @@ export class BackupTaskStreamingService extends BackupTaskService {
                 ];
                 
                 // For very large command strings, use stdin instead of -c
-                const useStdin = allTruncateCommands.length > 100000; // ~100KB limit for -c
+                const useStdin = allDropCommands.length > 100000; // ~100KB limit for -c
                 
                 if (!useStdin) {
                   // Add -c flag for smaller command strings
-                  truncateArgs.push('-c', allTruncateCommands);
+                  dropArgs.push('-c', allDropCommands);
                 } else {
                   // Use -f - to read from stdin
-                  truncateArgs.push('-f', '-');
+                  dropArgs.push('-f', '-');
                 }
                 
                 stdoutLineCount++;
-                await taskLoggerService.appendLog(taskId, 'stdout', `Truncating ${tables.length} existing tables...`, stdoutLineCount).catch(() => {});
+                await taskLoggerService.appendLog(taskId, 'stdout', 
+                  `Dropping ${triggers.length} triggers, ${functions.length} functions, ${tables.length} tables...`, 
+                  stdoutLineCount).catch(() => {});
                 
-                const truncateProcess = spawn('psql', truncateArgs, {
+                const dropProcess = spawn('psql', dropArgs, {
                   env: {
                     ...process.env,
                     PGPASSWORD: conn.password,
@@ -740,86 +782,70 @@ export class BackupTaskStreamingService extends BackupTaskService {
                 });
                 
                 // If using stdin, write the commands
-                if (useStdin && truncateProcess.stdin) {
-                  truncateProcess.stdin.write(allTruncateCommands);
-                  truncateProcess.stdin.end();
+                if (useStdin && dropProcess.stdin) {
+                  dropProcess.stdin.write(allDropCommands);
+                  dropProcess.stdin.end();
                 }
                 
-                // Capture truncate output
-                truncateProcess.stdout?.on('data', async (data: Buffer) => {
+                // Capture drop output
+                dropProcess.stdout?.on('data', async (data: Buffer) => {
                   const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
                   for (const line of lines) {
                     stdoutLineCount++;
-                    await taskLoggerService.appendLog(taskId, 'stdout', `[TRUNCATE] ${line}`, stdoutLineCount).catch(() => {});
+                    await taskLoggerService.appendLog(taskId, 'stdout', `[DROP] ${line}`, stdoutLineCount).catch(() => {});
                   }
                 });
                 
-                truncateProcess.stderr?.on('data', async (data: Buffer) => {
+                dropProcess.stderr?.on('data', async (data: Buffer) => {
                   const lines = data.toString('utf-8').split('\n').filter(l => l.length > 0);
                   for (const line of lines) {
                     stderrLineCount++;
-                    await taskLoggerService.appendLog(taskId, 'stderr', `[TRUNCATE] ${line}`, stderrLineCount).catch(() => {});
+                    await taskLoggerService.appendLog(taskId, 'stderr', `[DROP] ${line}`, stderrLineCount).catch(() => {});
                   }
                 });
                 
-                // Wait for truncate to complete
+                // Wait for drop to complete
                 await new Promise<void>((resolve, reject) => {
-                  truncateProcess.on('close', (code) => {
+                  dropProcess.on('close', (code) => {
                     if (code === 0) {
                       stdoutLineCount++;
-                      taskLoggerService.appendLog(taskId, 'stdout', '✓ Tables truncated successfully', stdoutLineCount).catch(() => {});
+                      taskLoggerService.appendLog(taskId, 'stdout', '✓ All objects dropped successfully', stdoutLineCount).catch(() => {});
                       resolve();
                     } else {
                       stderrLineCount++;
-                      taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate completed with code ${code} (continuing with restore)`, stderrLineCount).catch(() => {});
-                      resolve(); // Continue anyway - some tables might not exist
+                      taskLoggerService.appendLog(taskId, 'stderr', `⚠ Drop completed with code ${code} (continuing with restore)`, stderrLineCount).catch(() => {});
+                      resolve(); // Continue anyway - some objects might not exist
                     }
                   });
-                  truncateProcess.on('error', (err) => {
+                  dropProcess.on('error', (err) => {
                     stderrLineCount++;
-                    taskLoggerService.appendLog(taskId, 'stderr', `⚠ Truncate error: ${err.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+                    taskLoggerService.appendLog(taskId, 'stderr', `⚠ Drop error: ${err.message} (continuing with restore)`, stderrLineCount).catch(() => {});
                     resolve(); // Continue anyway
                   });
                 });
               }
             } catch (error: any) {
               stderrLineCount++;
-              await taskLoggerService.appendLog(taskId, 'stderr', `⚠ Could not extract table names for truncate: ${error.message} (continuing with restore)`, stderrLineCount).catch(() => {});
+              await taskLoggerService.appendLog(taskId, 'stderr', `⚠ Could not extract object names for drop: ${error.message} (continuing with restore)`, stderrLineCount).catch(() => {});
             }
           }
           
-          // For clean restore, we need to continue even if CREATE TABLE fails (tables already exist after truncate)
-          // We'll pipe the SQL file through a command that prepends \set ON_ERROR_STOP off
-          if (cleanRestore) {
-            // Use shell to prepend ON_ERROR_STOP=off and pipe to psql
-            const escapedFilepath = task.filepath.replace(/'/g, "'\"'\"'");
-            const shellCommand = `(echo '\\set ON_ERROR_STOP off' ; cat '${escapedFilepath}') | psql -h ${conn.host} -p ${conn.port} -U ${conn.user} -d ${conn.database}`;
-            
-            childProcess = spawn('/bin/sh', ['-c', shellCommand], {
-              env: {
-                ...process.env,
-                PGPASSWORD: conn.password,
-              },
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-          } else {
-            // Regular restore - use psql directly
-            const args = [
-              '-h', conn.host,
-              '-p', conn.port.toString(),
-              '-U', conn.user,
-              '-d', conn.database,
-              '-f', task.filepath,
-            ];
+          // After dropping all objects, restore normally (no need for ON_ERROR_STOP=off since everything is dropped)
+          const args = [
+            '-h', conn.host,
+            '-p', conn.port.toString(),
+            '-U', conn.user,
+            '-d', conn.database,
+            '-f', task.filepath,
+          ];
 
-            childProcess = spawn('psql', args, {
-              env: {
-                ...process.env,
-                PGPASSWORD: conn.password,
-              },
-              stdio: ['ignore', 'pipe', 'pipe'],
-            });
-          }
+          childProcess = spawn('psql', args, {
+            env: {
+              ...process.env,
+              PGPASSWORD: conn.password,
+            },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
         }
       }
 

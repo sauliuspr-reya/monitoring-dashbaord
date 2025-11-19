@@ -289,17 +289,17 @@ export default function RestoreModal({
                   />
                   <div className="flex-1">
                     <label htmlFor="cleanRestoreTableView" className="text-sm font-medium text-gray-900 cursor-pointer">
-                      Clean Restore (Truncate/Drop existing data)
+                      Clean Restore (Drop all objects before restore)
                     </label>
                     <p className="text-xs text-gray-600 mt-1">
                       {cleanRestore ? (
                         <>
-                          <strong>Enabled:</strong> Existing tables will be truncated (plain SQL) or dropped (custom format) before restore.
-                          This ensures a clean restore with no duplicate data.
+                          <strong>Enabled:</strong> All existing objects (tables, functions, triggers, indexes, constraints) will be DROPPED before restore.
+                          This ensures a completely clean restore with no conflicts. All data will be permanently deleted.
                         </>
                       ) : (
                         <>
-                          <strong>Disabled:</strong> Data will be restored on top of existing tables. This may cause duplicates or conflicts.
+                          <strong>Disabled:</strong> Data will be restored on top of existing objects. This may cause duplicates or conflicts.
                           Enable this option for a clean restore.
                         </>
                       )}
@@ -486,7 +486,7 @@ export default function RestoreModal({
                             `  Size: ${formatBytes(selectedBackup.size)}\n` +
                             `${dbInfo}${tableInfo}\n\n` +
                             `CLEAN RESTORE MODE:\n` +
-                            `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                            `  • All existing objects (tables, functions, triggers, indexes, constraints) will be DROPPED\n` +
                             `  • All existing data will be PERMANENTLY DELETED\n` +
                             `  • This action CANNOT be undone\n\n` +
                             `Are you absolutely sure you want to proceed?`
@@ -529,17 +529,17 @@ export default function RestoreModal({
               />
               <div className="flex-1">
                 <label htmlFor="cleanRestore" className="text-sm font-medium text-gray-900 cursor-pointer">
-                  Clean Restore (Truncate/Drop existing data)
+                  Clean Restore (Drop all objects before restore)
                 </label>
                 <p className="text-xs text-gray-600 mt-1">
                   {cleanRestore ? (
                     <>
-                      <strong>Enabled:</strong> Existing tables will be truncated (plain SQL) or dropped (custom format) before restore.
-                      This ensures a clean restore with no duplicate data.
+                      <strong>Enabled:</strong> All existing objects (tables, functions, triggers, indexes, constraints) will be DROPPED before restore.
+                      This ensures a completely clean restore with no conflicts. All data will be permanently deleted.
                     </>
                   ) : (
                     <>
-                      <strong>Disabled:</strong> Data will be restored on top of existing data. This may cause conflicts or duplicates.
+                      <strong>Disabled:</strong> Data will be restored on top of existing objects. This may cause conflicts or duplicates.
                       Enable this for a clean restore.
                     </>
                   )}
