@@ -11,11 +11,23 @@ The verification worker is now configured to run in the same container as the Ne
 3. **Updated `next.config.js`**: Enabled `instrumentationHook` experimental feature
 4. **Updated `Dockerfile`**: Added copy step for `lib/` directory (worker source files)
 
-## How to Enable
+## Behavior
 
-### In Kubernetes Deployment
+**The worker is enabled by default** and will start automatically when the Next.js server starts.
 
-Add this environment variable to your deployment:
+### To Disable the Worker
+
+If you want to disable it, set:
+
+```yaml
+env:
+  - name: ENABLE_VERIFICATION_WORKER
+    value: "false"
+```
+
+### To Explicitly Enable (Optional)
+
+You can also explicitly enable it (though it's on by default):
 
 ```yaml
 env:
@@ -66,9 +78,12 @@ You should see:
 
 ## Disabling the Worker
 
-To disable, either:
-- Remove the `ENABLE_VERIFICATION_WORKER` env var, or
-- Set it to `false` or any value other than `"true"`
+To disable, set:
+```yaml
+env:
+  - name: ENABLE_VERIFICATION_WORKER
+    value: "false"
+```
 
 ## Troubleshooting
 

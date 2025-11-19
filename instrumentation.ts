@@ -18,8 +18,10 @@ export async function register() {
     console.warn('[instrumentation] ts-node not available, assuming pre-compiled files');
   }
 
-  // Start verification worker if enabled
-  if (process.env.ENABLE_VERIFICATION_WORKER === 'true') {
+  // Start verification worker (enabled by default, set ENABLE_VERIFICATION_WORKER=false to disable)
+  const workerEnabled = process.env.ENABLE_VERIFICATION_WORKER !== 'false';
+  
+  if (workerEnabled) {
     try {
       const { VerificationWorker } = await import('./lib/worker/verification-worker');
       const worker = new VerificationWorker();
@@ -32,7 +34,7 @@ export async function register() {
       console.error('[instrumentation] Failed to start verification worker:', error);
     }
   } else {
-    console.log('[instrumentation] Verification worker disabled (set ENABLE_VERIFICATION_WORKER=true to enable)');
+    console.log('[instrumentation] Verification worker disabled (ENABLE_VERIFICATION_WORKER=false)');
   }
 }
 
