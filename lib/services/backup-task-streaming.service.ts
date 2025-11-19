@@ -40,6 +40,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
     let stderrLineCount = 0;
 
     try {
+      let encounteredError = false;
+      let firstErrorLine: string | null = null;
+
       const backupDir = await this.getBackupDir();
       await fs.mkdir(backupDir, { recursive: true });
 
@@ -764,6 +767,21 @@ export class BackupTaskStreamingService extends BackupTaskService {
         for (const line of lines) {
           stderrLineCount++;
           await taskLoggerService.appendLog(taskId, 'stderr', line, stderrLineCount);
+          
+          const trimmed = line.trim();
+          const lower = trimmed.toLowerCase();
+          if (
+            lower.startsWith('error:') ||
+            lower.startsWith('fatal:') ||
+            lower.includes('duplicate key value violates unique constraint') ||
+            lower.includes('does not exist') ||
+            lower.includes('violates foreign key constraint')
+          ) {
+            encounteredError = true;
+            if (!firstErrorLine) {
+              firstErrorLine = trimmed;
+            }
+          }
         }
       });
 
@@ -777,8 +795,11 @@ export class BackupTaskStreamingService extends BackupTaskService {
             return resolve();
           }
 
-          if (code !== 0) {
-            const errorMsg = `Restore exited with code ${code}`;
+          if (code !== 0 || encounteredError) {
+            const errorMsg = code !== 0
+              ? `Restore exited with code ${code}`
+              : `Restore completed with exit code 0, but errors were detected: ${firstErrorLine || 'see logs'}`;
+            
             await this.updateTask(taskId, {
               status: 'failed',
               error_message: errorMsg,

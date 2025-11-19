@@ -356,47 +356,66 @@ export default async function handler(
       tablesToCheck = [...new Set(tablesToCheck)];
       
       // Check which tables exist on target
-      if (tablesToCheck.length > 0) {
+    const parseTableIdentifier = (identifier: string): { schema: string; table: string } => {
+      const trimmed = identifier.trim();
+      if (trimmed.includes('.')) {
+        const [schemaPart, tablePart] = trimmed.split('.', 2);
+        return {
+          schema: schemaPart.replace(/^"|"$/g, '') || 'public',
+          table: tablePart.replace(/^"|"$/g, ''),
+        };
+      }
+      return { schema: 'public', table: trimmed.replace(/^"|"$/g, '') };
+    };
+
+    const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
+
+    const buildQualifiedName = (schema: string, table: string) => {
+      const quotedTable = quoteIdentifier(table);
+      if (!schema || schema === 'public') {
+        return `public.${quotedTable}`;
+      }
+      return `${quoteIdentifier(schema)}.${quotedTable}`;
+    };
+
+    if (tablesToCheck.length > 0) {
         const missingTables: string[] = [];
         const emptyTables: string[] = [];
         
         for (const table of tablesToCheck) {
-          // Parse schema.table format
-          const [schema, tableName] = table.includes('.') 
-            ? table.split('.', 2) 
-            : ['public', table];
+          const { schema, table: rawTableName } = parseTableIdentifier(table);
+          const cleanTableName = rawTableName;
+          const qualifiedName = buildQualifiedName(schema, cleanTableName);
           
-          const cleanTableName = tableName.replace(/^"|"$/g, '');
+          // Use to_regclass to resolve the table (handles quoted identifiers)
+          const regclassResult = await targetPool.query(
+            `SELECT to_regclass($1) AS regclass`,
+            [qualifiedName]
+          );
           
-          // Check if table exists
-          const checkResult = await targetPool.query(`
-            SELECT COUNT(*) as count
-            FROM information_schema.tables
-            WHERE table_schema = $1 AND table_name = $2
-          `, [schema, cleanTableName]);
-          
-          if (checkResult.rows[0].count === '0') {
+          if (!regclassResult.rows[0]?.regclass) {
             missingTables.push(table);
           } else if (dataCopy === false) {
             // If copy_data = false, check if table has data (baseline should be restored)
             // Use fast estimate (reltuples) to avoid slow COUNT(*) on large tables
             try {
-              const rowCountResult = await targetPool.query(`
-                SELECT COALESCE(reltuples::bigint, 0) as estimate
-                FROM pg_class
-                WHERE relname = $1 
-                  AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $2)
-              `, [cleanTableName, schema]);
+              const rowCountResult = await targetPool.query(
+                `
+                  SELECT COALESCE(c.reltuples::bigint, 0) AS estimate
+                  FROM pg_class c
+                  WHERE c.oid = to_regclass($1)::oid
+                `,
+                [qualifiedName]
+              );
               
               const rowEstimate = parseInt(rowCountResult.rows[0]?.estimate || '0', 10);
               
               // If table exists but has no data and copy_data = false, warn user
               if (rowEstimate === 0) {
                 // Double-check with actual count for small tables (more accurate)
-                const actualCountResult = await targetPool.query(`
-                  SELECT COUNT(*) as count
-                  FROM ${schema === 'public' ? `"${cleanTableName}"` : `${schema}."${cleanTableName}"`}
-                `).catch(() => ({ rows: [{ count: '0' }] }));
+                const actualCountResult = await targetPool.query(
+                  `SELECT COUNT(*)::bigint AS count FROM ${qualifiedName}`
+                ).catch(() => ({ rows: [{ count: '0' }] }));
                 
                 const actualCount = parseInt(actualCountResult.rows[0]?.count || '0', 10);
                 if (actualCount === 0) {
