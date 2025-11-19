@@ -40,6 +40,8 @@ export default function VerificationDashboard() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteJob, setDeleteJob] = useState<{ tableName: string; id: number } | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
+  const [showRestartModal, setShowRestartModal] = useState(false);
+  const [restartJob, setRestartJob] = useState<{ tableName: string; id: number } | null>(null);
 
   useEffect(() => {
     fetchJobs();
@@ -65,6 +67,20 @@ export default function VerificationDashboard() {
       return;
     }
 
+    // Check if a completed job exists for this table
+    const existingJob = jobs.find(job => job.tableName === selectedTable && job.status === 'completed');
+    if (existingJob) {
+      // Show restart confirmation modal
+      setRestartJob({ tableName: selectedTable, id: existingJob.id });
+      setShowRestartModal(true);
+      return;
+    }
+
+    // No completed job exists, proceed with starting
+    await startVerificationJob();
+  };
+
+  const startVerificationJob = async () => {
     setStarting(true);
     try {
       const response = await fetch('/api/verification/start', {
@@ -96,6 +112,32 @@ export default function VerificationDashboard() {
       alert('Failed to start verification');
     } finally {
       setStarting(false);
+    }
+  };
+
+  const handleConfirmRestart = async () => {
+    if (!restartJob) return;
+
+    // Delete the completed job first
+    try {
+      const deleteResponse = await fetch('/api/verification/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tableName: restartJob.tableName }),
+      });
+
+      if (!deleteResponse.ok) {
+        alert('Failed to delete completed job');
+        return;
+      }
+
+      // Now start a new verification
+      setShowRestartModal(false);
+      setRestartJob(null);
+      await startVerificationJob();
+    } catch (error) {
+      console.error('Failed to restart verification:', error);
+      alert('Failed to restart verification');
     }
   };
 
@@ -701,6 +743,50 @@ export default function VerificationDashboard() {
                 className="flex-1 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50"
               >
                 {deleting === deleteJob.id ? 'Deleting...' : 'Delete Permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restart Verification Modal */}
+      {showRestartModal && restartJob && (
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <div className="flex items-center mb-4">
+              <div className="flex-shrink-0 w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-yellow-600" />
+              </div>
+              <h3 className="ml-4 text-lg font-medium text-gray-900">Restart Verification</h3>
+            </div>
+            
+            <div className="mb-6">
+              <p className="text-sm text-gray-600 mb-3">
+                A completed verification already exists for <strong>{restartJob.tableName}</strong>.
+              </p>
+              <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3">
+                <p className="text-sm text-yellow-800">
+                  <strong>Note:</strong> Starting a new verification will delete the existing completed job and all its data (mismatches and gaps). Do you want to proceed?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex space-x-3">
+              <button
+                onClick={() => {
+                  setShowRestartModal(false);
+                  setRestartJob(null);
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmRestart}
+                disabled={starting}
+                className="flex-1 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
+              >
+                {starting ? 'Restarting...' : 'Restart Verification'}
               </button>
             </div>
           </div>
