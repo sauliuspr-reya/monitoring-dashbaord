@@ -595,13 +595,13 @@ export class BackupTaskStreamingService extends BackupTaskService {
           childProcess = psql;
         } else {
           // For plain SQL, we need to handle clean restore differently
-          // If clean restore is requested, we'll TRUNCATE tables before restore
-          // This preserves the schema but removes all data
+          // If clean restore is requested, we'll DROP all objects (tables, functions, triggers, etc.) before restore
+          // This ensures a completely clean restore with no conflicts
           if (cleanRestore) {
-            // First, get list of tables from the backup file
-            // We'll extract table names and truncate them before restore
+            // First, get list of tables and other objects from the backup file
+            // We'll extract object names and drop them before restore
             stdoutLineCount++;
-            await taskLoggerService.appendLog(taskId, 'stdout', 'Clean restore requested: will TRUNCATE tables before restore', stdoutLineCount).catch(() => {});
+            await taskLoggerService.appendLog(taskId, 'stdout', 'Clean restore requested: will DROP all objects before restore', stdoutLineCount).catch(() => {});
             
             // Extract table names from backup file (look for CREATE TABLE and COPY statements)
             // For very large files, we'll read in chunks to avoid memory issues
@@ -623,58 +623,90 @@ export class BackupTaskStreamingService extends BackupTaskService {
                 backupContent = await fs.readFile(task.filepath, 'utf-8');
               }
               
-              // Get tables from CREATE TABLE statements (more reliable)
+              // Extract all objects that need to be dropped
+              // 1. Tables (from CREATE TABLE and COPY statements)
               const createTableMatches = backupContent.match(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:public\.)?([^\s(]+)/gim) || [];
-              // Also get from COPY statements (for data-only dumps)
               const copyMatches = backupContent.match(/^COPY\s+(?:public\.)?([^\s(]+)/gm) || [];
               
-              // Combine and deduplicate
-              const allMatches = [...createTableMatches, ...copyMatches];
-              const tables = [...new Set(allMatches.map(m => {
-                // Extract table name, handling both CREATE TABLE and COPY formats
+              // 2. Functions (from CREATE FUNCTION statements)
+              const functionMatches = backupContent.match(/^CREATE\s+(?:OR REPLACE\s+)?FUNCTION\s+(?:public\.)?([^\s(]+)/gim) || [];
+              
+              // 3. Triggers (from CREATE TRIGGER statements)
+              const triggerMatches = backupContent.match(/^CREATE\s+(?:OR REPLACE\s+)?TRIGGER\s+([^\s]+)/gim) || [];
+              
+              // Extract and deduplicate table names
+              const allTableMatches = [...createTableMatches, ...copyMatches];
+              const tables = [...new Set(allTableMatches.map(m => {
                 let tableName = m.replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?(?:public\.)?/i, '')
                                  .replace(/^COPY\s+(?:public\.)?/i, '')
                                  .replace(/"/g, '')
                                  .trim();
-                // Remove schema prefix if present
                 if (tableName.includes('.')) {
                   tableName = tableName.split('.').pop() || tableName;
                 }
                 return tableName;
               }))];
               
-              if (tables.length > 0) {
+              // Extract function names
+              const functions = [...new Set(functionMatches.map(m => {
+                let funcName = m.replace(/^CREATE\s+(?:OR REPLACE\s+)?FUNCTION\s+(?:public\.)?/i, '')
+                               .replace(/\(.*$/, '') // Remove parameters
+                               .replace(/"/g, '')
+                               .trim();
+                if (funcName.includes('.')) {
+                  funcName = funcName.split('.').pop() || funcName;
+                }
+                return funcName;
+              }))];
+              
+              // Extract trigger names
+              const triggers = [...new Set(triggerMatches.map(m => {
+                return m.replace(/^CREATE\s+(?:OR REPLACE\s+)?TRIGGER\s+/i, '')
+                        .replace(/\s+ON.*$/i, '') // Remove ON table part
+                        .replace(/"/g, '')
+                        .trim();
+              }))];
+              
+              if (tables.length > 0 || functions.length > 0 || triggers.length > 0) {
                 stdoutLineCount++;
-                await taskLoggerService.appendLog(taskId, 'stdout', `Found ${tables.length} tables to truncate`, stdoutLineCount).catch(() => {});
+                await taskLoggerService.appendLog(taskId, 'stdout', 
+                  `Found ${tables.length} tables, ${functions.length} functions, ${triggers.length} triggers to drop`, 
+                  stdoutLineCount).catch(() => {});
                 
-                // Build TRUNCATE commands for tables
-                // TRUNCATE preserves schema but removes all data
-                // Use CASCADE to also truncate tables that have foreign key references
-                // Note: TRUNCATE doesn't support IF EXISTS, so we'll use a DO block to handle missing tables
-                const truncateCommands = tables.map(t => {
-                  // For mixed-case or special characters, we need to quote
-                  const cleanTable = t.replace(/^"|"$/g, '');
-                  // Quote if contains uppercase or special chars
+                // Build DROP commands
+                // Drop in reverse dependency order: triggers -> functions -> tables
+                const dropCommands: string[] = [];
+                
+                // Drop triggers first (they depend on tables)
+                for (const trigger of triggers) {
+                  const cleanTrigger = trigger.replace(/^"|"$/g, '');
+                  const quotedTrigger = (cleanTrigger !== cleanTrigger.toLowerCase() || /[^a-z0-9_]/.test(cleanTrigger))
+                    ? `"${cleanTrigger.replace(/"/g, '""')}"`
+                    : cleanTrigger;
+                  dropCommands.push(`DROP TRIGGER IF EXISTS ${quotedTrigger} ON public.* CASCADE;`);
+                }
+                
+                // Drop functions (they may be used by triggers)
+                for (const func of functions) {
+                  const cleanFunc = func.replace(/^"|"$/g, '');
+                  const quotedFunc = (cleanFunc !== cleanFunc.toLowerCase() || /[^a-z0-9_]/.test(cleanFunc))
+                    ? `"${cleanFunc.replace(/"/g, '""')}"`
+                    : cleanFunc;
+                  // Drop function with all overloads
+                  dropCommands.push(`DROP FUNCTION IF EXISTS public.${quotedFunc} CASCADE;`);
+                }
+                
+                // Drop tables last (they depend on nothing, but everything depends on them)
+                for (const table of tables) {
+                  const cleanTable = table.replace(/^"|"$/g, '');
                   const quotedTable = (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable))
                     ? `"${cleanTable.replace(/"/g, '""')}"`
                     : cleanTable;
-                  
-                  // Use DO block to safely truncate (handles missing tables gracefully)
-                  return `DO $$ BEGIN TRUNCATE TABLE public.${quotedTable} CASCADE; EXCEPTION WHEN undefined_table THEN NULL; END $$;`;
-                }).join('\n');
+                  // DROP CASCADE will also drop indexes, constraints, sequences, etc.
+                  dropCommands.push(`DROP TABLE IF EXISTS public.${quotedTable} CASCADE;`);
+                }
                 
-                // Also reset sequences to start from 1
-                // This ensures auto-increment IDs start fresh
-                const sequenceResetCommands = tables.map(t => {
-                  const cleanTable = t.replace(/^"|"$/g, '');
-                  if (cleanTable !== cleanTable.toLowerCase() || /[^a-z0-9_]/.test(cleanTable)) {
-                    const quotedTable = `"${cleanTable.replace(/"/g, '""')}"`;
-                    return `ALTER SEQUENCE IF EXISTS public.${quotedTable}_id_seq RESTART WITH 1;`;
-                  }
-                  return `ALTER SEQUENCE IF EXISTS public.${cleanTable}_id_seq RESTART WITH 1;`;
-                }).join('\n');
-                
-                const allTruncateCommands = truncateCommands + '\n' + sequenceResetCommands;
+                const allDropCommands = dropCommands.join('\n');
                 
                 // Execute truncate via psql
                 // Use -f - to read from stdin for large command strings
