@@ -2,6 +2,9 @@
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone', // Enable standalone output for Docker
+  experimental: {
+    instrumentationHook: true, // Enable instrumentation hook for workers
+  },
   
   // Rewrite /healthz to /api/healthz for Kubernetes probes
   async rewrites() {

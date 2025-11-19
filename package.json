@@ -9,7 +9,7 @@
     "lint": "next lint",
     "type-check": "tsc --noEmit",
     "worker": "ts-node lib/worker/metrics-collector.ts",
-    "verification-worker": "tsx lib/worker/verification-worker.ts"
+    "verification-worker": "ts-node lib/worker/verification-worker.ts"
   },
   "dependencies": {
     "@types/js-yaml": "^4.0.9",

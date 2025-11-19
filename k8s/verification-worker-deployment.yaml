@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: verification-worker
+  namespace: reya-mainnet  # Change to your namespace
+spec:
+  replicas: 1  # Only one worker instance (prevents duplicate processing)
+  selector:
+    matchLabels:
+      app: verification-worker
+  template:
+    metadata:
+      labels:
+        app: verification-worker
+    spec:
+      containers:
+      - name: worker
+        image: your-registry/migration-dashboard:latest  # Use your image
+        command:
+          - node
+          - -r
+          - ts-node/register
+          - lib/worker/verification-worker.ts
+        # Alternative: Use compiled JS (recommended for production)
+        # command: ["node", "lib/worker/verification-worker.js"]
+        env:
+        # Source and target database connections
+        - name: SOURCE_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: source-database-url
+        - name: TARGET_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: target-database-url
+        
+        # Monitoring database connection
+        - name: MONITORING_DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: monitoring-db-host
+        - name: MONITORING_DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: monitoring-db-port
+        - name: MONITORING_DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: monitoring-db-name
+        - name: MONITORING_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: monitoring-db-user
+        - name: MONITORING_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: reya-mainnet-monitoring-dashboard-secret
+              key: monitoring-db-password
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "ps aux | grep -v grep | grep verification-worker"
+          initialDelaySeconds: 60
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "ps aux | grep -v grep | grep verification-worker"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+
