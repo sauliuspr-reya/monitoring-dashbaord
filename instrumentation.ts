@@ -10,24 +10,36 @@ export async function register() {
     return;
   }
 
-  // Register ts-node for TypeScript imports (needed for worker files)
-  try {
-    require('ts-node/register');
-  } catch (error) {
-    // ts-node might not be available, but that's okay if files are pre-compiled
-    console.warn('[instrumentation] ts-node not available, assuming pre-compiled files');
+  // Skip during build - instrumentation hook runs during build for analysis
+  // We only want to actually load the worker at runtime (when server starts)
+  // Check multiple indicators that we're in build phase
+  const isBuildPhase = 
+    process.env.NEXT_PHASE === 'phase-production-build' ||
+    (typeof (global as any).__NEXT_DATA__ === 'undefined' && process.env.NODE_ENV === 'production');
+  
+  if (isBuildPhase) {
+    return;
   }
 
   // Start verification worker (enabled by default, set ENABLE_VERIFICATION_WORKER=false to disable)
   const workerEnabled = process.env.ENABLE_VERIFICATION_WORKER !== 'false';
   
   if (workerEnabled) {
-    try {
-      // Use require with a computed path to avoid webpack static analysis
-      // This ensures the worker file is only loaded at runtime, not during build
+    // Use Function constructor to create a truly dynamic require
+    // This prevents webpack from statically analyzing the code
+    const loadWorker = new Function(`
+      try {
+        require('ts-node/register');
+      } catch (e) {
+        // ts-node might not be available
+      }
       const path = require('path');
       const workerPath = path.join(process.cwd(), 'lib', 'worker', 'verification-worker');
-      const workerModule = require(workerPath);
+      return require(workerPath);
+    `);
+    
+    try {
+      const workerModule = loadWorker();
       const VerificationWorker = workerModule.VerificationWorker || workerModule.default?.VerificationWorker || workerModule.default;
       
       if (!VerificationWorker) {
@@ -37,10 +49,10 @@ export async function register() {
       const worker = new VerificationWorker();
       
       console.log('[instrumentation] Starting verification worker...');
-      worker.start().catch((error) => {
+      worker.start().catch((error: any) => {
         console.error('[instrumentation] Verification worker error:', error);
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('[instrumentation] Failed to start verification worker:', error);
     }
   } else {
