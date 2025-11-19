@@ -4,6 +4,32 @@ import path from 'path';
 import { BackupTaskService, BackupTask } from './backup-task.service';
 import { taskLoggerService } from './task-logger.service';
 
+type TableIdentifier = { schema: string; table: string };
+
+const stripQuotes = (value: string) => value.replace(/^"|"$/g, '');
+
+const parseTableIdentifier = (identifier: string): TableIdentifier => {
+  const trimmed = identifier.trim();
+  if (trimmed.includes('.')) {
+    const [schemaPart, tablePart] = trimmed.split('.', 2);
+    return {
+      schema: stripQuotes(schemaPart) || 'public',
+      table: stripQuotes(tablePart),
+    };
+  }
+  return { schema: 'public', table: stripQuotes(trimmed) };
+};
+
+const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
+
+const formatTableForSql = (identifier: string) => {
+  const { schema, table } = parseTableIdentifier(identifier);
+  return `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+};
+
+const buildQualifiedName = (schema: string, table: string) =>
+  `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+
 /**
  * Enhanced backup task service with streaming output support
  * Uses spawn() instead of exec() to capture real-time stdout/stderr

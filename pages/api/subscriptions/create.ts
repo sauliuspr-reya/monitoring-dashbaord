@@ -1,6 +1,32 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { getDbPool, createSourceTargetPool } from '@/lib/db/connection';
 
+type TableIdentifier = { schema: string; table: string };
+
+const stripQuotes = (value: string) => value.replace(/^"|"$/g, '');
+
+const parseTableIdentifier = (identifier: string): TableIdentifier => {
+  const trimmed = identifier.trim();
+  if (trimmed.includes('.')) {
+    const [schemaPart, tablePart] = trimmed.split('.', 2);
+    return {
+      schema: stripQuotes(schemaPart) || 'public',
+      table: stripQuotes(tablePart),
+    };
+  }
+  return { schema: 'public', table: stripQuotes(trimmed) };
+};
+
+const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
+
+const formatTableIdentifier = (identifier: string) => {
+  const { schema, table } = parseTableIdentifier(identifier);
+  return `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+};
+
+const buildQualifiedName = (schema: string, table: string) =>
+  `${quoteIdentifier(schema)}.${quoteIdentifier(table)}`;
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -222,20 +248,14 @@ export default async function handler(
             tables = includedTables;
             
             // Create publication with included tables
-            const tableList = includedTables.map((t: string) => {
-              const escaped = t.replace(/"/g, '""');
-              return `"${escaped}"`;
-            }).join(', ');
+            const tableList = includedTables.map((t: string) => formatTableIdentifier(t)).join(', ');
             await sourcePool.query(`
               CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
             `);
           } else if (customTables && customTables.length > 0) {
             // Create publication for specific tables
             tables = customTables;
-            const tableList = customTables.map((t: string) => {
-              const escaped = t.replace(/"/g, '""');
-              return `"${escaped}"`;
-            }).join(', ');
+            const tableList = customTables.map((t: string) => formatTableIdentifier(t)).join(', ');
             await sourcePool.query(`
               CREATE PUBLICATION ${escapedPubName} FOR TABLE ${tableList}
             `);
@@ -270,7 +290,7 @@ export default async function handler(
             // Add any missing tables to the existing publication
             if (missingTables.length > 0) {
               for (const table of missingTables) {
-                const escapedTable = `"${table.replace(/"/g, '""')}"`;
+                const escapedTable = formatTableIdentifier(table);
                 try {
                   await sourcePool.query(`
                     ALTER PUBLICATION ${escapedPubName} ADD TABLE ${escapedTable}
@@ -356,29 +376,7 @@ export default async function handler(
       tablesToCheck = [...new Set(tablesToCheck)];
       
       // Check which tables exist on target
-    const parseTableIdentifier = (identifier: string): { schema: string; table: string } => {
-      const trimmed = identifier.trim();
-      if (trimmed.includes('.')) {
-        const [schemaPart, tablePart] = trimmed.split('.', 2);
-        return {
-          schema: schemaPart.replace(/^"|"$/g, '') || 'public',
-          table: tablePart.replace(/^"|"$/g, ''),
-        };
-      }
-      return { schema: 'public', table: trimmed.replace(/^"|"$/g, '') };
-    };
-
-    const quoteIdentifier = (identifier: string) => `"${identifier.replace(/"/g, '""')}"`;
-
-    const buildQualifiedName = (schema: string, table: string) => {
-      const quotedTable = quoteIdentifier(table);
-      if (!schema || schema === 'public') {
-        return `public.${quotedTable}`;
-      }
-      return `${quoteIdentifier(schema)}.${quotedTable}`;
-    };
-
-    if (tablesToCheck.length > 0) {
+      if (tablesToCheck.length > 0) {
         const missingTables: string[] = [];
         const emptyTables: string[] = [];
         
@@ -496,10 +494,7 @@ export default async function handler(
           
           if (filteredPubCheck.rows[0].count === '0') {
             // Create new publication with only selected tables
-            const tableList = customTables.map((t: string) => {
-              const escaped = t.replace(/"/g, '""');
-              return `"${escaped}"`;
-            }).join(', ');
+          const tableList = customTables.map((t: string) => formatTableIdentifier(t)).join(', ');
             
             await sourcePool.query(`
               CREATE PUBLICATION "${escapedFilteredPubName}" FOR TABLE ${tableList}
@@ -580,14 +575,13 @@ export default async function handler(
         : tables;
       
       for (const table of tablesToSave) {
-        // Extract just the table name (without schema) for storage
-        const tableNameOnly = table.includes('.') ? table.split('.')[1] : table;
+        const { schema, table: tableNameOnly } = parseTableIdentifier(table);
         await monitoringPool.query(`
           INSERT INTO subscription_tables (
             subscription_id, table_name, schema_name, enabled
-          ) VALUES ($1, $2, 'public', true)
+          ) VALUES ($1, $2, $3, true)
           ON CONFLICT DO NOTHING
-        `, [subscriptionId, tableNameOnly]);
+        `, [subscriptionId, tableNameOnly, schema]);
       }
 
       res.status(201).json({
