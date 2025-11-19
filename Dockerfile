@@ -48,6 +48,10 @@ RUN --mount=from=builder,source=/app/public,target=/tmp/public-source \
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Copy worker source files (needed for instrumentation hook to import workers)
+# Next.js standalone doesn't include lib/ by default, so we need to copy it
+COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
+
 USER nextjs
 
 # PORT can be overridden via environment variable, default to 3000

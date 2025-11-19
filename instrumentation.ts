@@ -10,6 +10,14 @@ export async function register() {
     return;
   }
 
+  // Register ts-node for TypeScript imports (needed for worker files)
+  try {
+    require('ts-node/register');
+  } catch (error) {
+    // ts-node might not be available, but that's okay if files are pre-compiled
+    console.warn('[instrumentation] ts-node not available, assuming pre-compiled files');
+  }
+
   // Start verification worker if enabled
   if (process.env.ENABLE_VERIFICATION_WORKER === 'true') {
     try {
