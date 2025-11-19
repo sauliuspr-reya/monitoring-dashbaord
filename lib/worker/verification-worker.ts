@@ -1,16 +1,15 @@
-import { config } from 'dotenv';
 import { createSourceTargetPool } from '../db/connection';
 import { VerificationService } from '../services/verification.service';
 import { VerificationJob, BatchResult } from '../types/verification.types';
 import { Pool } from 'pg';
 
-// Load environment variables from .env file
-config();
-
 /**
  * Data Integrity Verification Worker
  * Compares source and target tables row-by-row to detect mismatches and gaps
  * Optimized for high throughput (5000+ rows/sec)
+ * 
+ * Note: Environment variables are automatically loaded by Next.js from .env files
+ * No need to import dotenv in Next.js applications
  */
 export class VerificationWorker {
   private running = false;
@@ -51,6 +50,9 @@ export class VerificationWorker {
     let totalRowsChecked = BigInt(0);
     let totalMismatches = 0;
     let totalGaps = 0;
+    let batchNumber = 0;
+    let lastProgressUpdateTime = Date.now();
+    const PROGRESS_UPDATE_INTERVAL_MS = 5000; // Update progress every 5 seconds
 
     while (this.running) {
       try {
@@ -120,6 +122,20 @@ export class VerificationWorker {
           console.log(
             `[verification-worker] Batch ${batchNumber}: ${result.rowsChecked} rows${startPkInfo} in ${duration}ms (${throughput.toFixed(0)} rows/sec)${mismatchInfo}${gapInfo}`
           );
+
+          // Update progress every 5 seconds (fire-and-forget, non-blocking)
+          const timeSinceLastUpdate = Date.now() - lastProgressUpdateTime;
+          if (timeSinceLastUpdate >= PROGRESS_UPDATE_INTERVAL_MS) {
+            this.service.updateJobState(job.id, {
+              last_checked_pk_value: lastCheckedPk || '',
+              total_rows_checked: totalRowsChecked,
+              mismatches_found: totalMismatches,
+              gaps_found: totalGaps,
+            }).catch(err => {
+              console.error('[verification-worker] Failed to update progress:', err.message);
+            });
+            lastProgressUpdateTime = Date.now();
+          }
 
           if (result.completed) {
             // Save final state to DB on completion/stop
