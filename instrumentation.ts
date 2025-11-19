@@ -23,7 +23,17 @@ export async function register() {
   
   if (workerEnabled) {
     try {
-      const { VerificationWorker } = await import('./lib/worker/verification-worker');
+      // Use require with a computed path to avoid webpack static analysis
+      // This ensures the worker file is only loaded at runtime, not during build
+      const path = require('path');
+      const workerPath = path.join(process.cwd(), 'lib', 'worker', 'verification-worker');
+      const workerModule = require(workerPath);
+      const VerificationWorker = workerModule.VerificationWorker || workerModule.default?.VerificationWorker || workerModule.default;
+      
+      if (!VerificationWorker) {
+        throw new Error('VerificationWorker not found in module');
+      }
+      
       const worker = new VerificationWorker();
       
       console.log('[instrumentation] Starting verification worker...');
