@@ -79,6 +79,7 @@ export default function RestoreModal({
   // Table selection state
   const [selectedBackup, setSelectedBackup] = useState<BackupInfo | null>(null);
   const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [tableInfo, setTableInfo] = useState<Array<{ name: string; rowCount?: number; size?: number }>>([]);
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [loadingTables, setLoadingTables] = useState(false);
   const [restoreMode, setRestoreMode] = useState<'all' | 'selected'>('all');
@@ -91,23 +92,54 @@ export default function RestoreModal({
   // Load tables from backup file
   const loadTables = async (backup: BackupInfo) => {
     setLoadingTables(true);
+    setError(null);
     try {
       const res = await fetch('/api/backup/list-tables', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: backup.filename }),
       });
-      const data = await res.json();
+      
+      // Check if response is JSON
+      const contentType = res.headers.get('content-type');
+      let data: any;
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await res.text();
+        console.error('[RestoreModal] Non-JSON response:', text.substring(0, 200));
+        setError(`Server error (${res.status}): ${res.statusText}. The backup file may be too large or corrupted.`);
+        setAvailableTables([]);
+        return;
+      }
+      
+      try {
+        data = await res.json();
+      } catch (parseError: any) {
+        console.error('[RestoreModal] JSON parse error:', parseError);
+        setError('Server returned invalid JSON. The backup file may be too large. Try using a custom format (.dump) backup file.');
+        setAvailableTables([]);
+        setTableInfo([]);
+        return;
+      }
       if (res.ok && data.tables) {
         setAvailableTables(data.tables);
+        setTableInfo(data.tableInfo || data.tables.map((name: string) => ({ name })));
         setSelectedTables(new Set(data.tables)); // Select all by default
+        setError(null);
       } else {
         setAvailableTables([]);
-        setError('Failed to load tables from backup file');
+        setTableInfo([]);
+        setError(data.error || data.message || 'Failed to load tables from backup file');
       }
     } catch (err: any) {
+      console.error('[RestoreModal] Error loading tables:', err);
       setAvailableTables([]);
-      setError('Failed to load tables: ' + err.message);
+      setTableInfo([]);
+      if (err.message && err.message.includes('JSON')) {
+        setError('Server returned invalid response. The backup file may be too large. Try using a custom format (.dump) backup file.');
+      } else {
+        setError('Failed to load tables: ' + (err.message || 'Unknown error'));
+      }
     } finally {
       setLoadingTables(false);
     }
@@ -117,6 +149,7 @@ export default function RestoreModal({
     setSelectedBackup(backup);
     setRestoreMode('all');
     setSelectedTables(new Set());
+    setTableInfo([]);
     loadTables(backup);
   };
 
@@ -207,6 +240,7 @@ export default function RestoreModal({
                   onClick={() => {
                     setSelectedBackup(null);
                     setAvailableTables([]);
+                    setTableInfo([]);
                     setSelectedTables(new Set());
                     setError(null);
                   }}
@@ -272,31 +306,122 @@ export default function RestoreModal({
                     )}
                   </div>
                   <div className="border border-gray-200 rounded-lg max-h-96 overflow-auto">
-                    <div className="p-2 space-y-1">
-                      {availableTables.map((table) => (
-                        <label
-                          key={table}
-                          className={`flex items-center p-2 rounded hover:bg-gray-50 cursor-pointer ${
-                            restoreMode === 'selected' && !selectedTables.has(table) ? 'opacity-50' : ''
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={restoreMode === 'all' || selectedTables.has(table)}
-                            onChange={() => handleTableToggle(table)}
-                            disabled={restoreMode === 'all'}
-                            className="mr-2"
-                          />
-                          <span className="text-sm font-mono">{table}</span>
-                        </label>
-                      ))}
-                    </div>
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-700 uppercase w-12">
+                            <input
+                              type="checkbox"
+                              checked={restoreMode === 'all' || (restoreMode === 'selected' && selectedTables.size === availableTables.length)}
+                              onChange={() => {
+                                if (restoreMode === 'all') {
+                                  setRestoreMode('selected');
+                                  setSelectedTables(new Set(availableTables));
+                                } else if (selectedTables.size === availableTables.length) {
+                                  setSelectedTables(new Set());
+                                } else {
+                                  setSelectedTables(new Set(availableTables));
+                                }
+                              }}
+                              disabled={restoreMode === 'all'}
+                              className="rounded border-gray-300"
+                            />
+                          </th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-gray-700 uppercase">Table Name</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium text-gray-700 uppercase">Rows</th>
+                          <th className="px-3 py-2 text-right text-xs font-medium text-gray-700 uppercase">Size</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {availableTables.map((table) => {
+                          const info = tableInfo.find(t => t.name === table);
+                          const rowCount = info?.rowCount;
+                          const size = info?.size;
+                          const formatBytes = (bytes?: number) => {
+                            if (!bytes || bytes === 0) return '0 B';
+                            const k = 1024;
+                            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                            const i = Math.floor(Math.log(bytes) / Math.log(k));
+                            return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+                          };
+                          const formatNumber = (num?: number) => {
+                            if (num === undefined || num === null) return 'N/A';
+                            return num.toLocaleString();
+                          };
+                          
+                          return (
+                            <tr
+                              key={table}
+                              className={`hover:bg-gray-50 ${
+                                restoreMode === 'selected' && !selectedTables.has(table) ? 'opacity-50' : ''
+                              }`}
+                            >
+                              <td className="px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={restoreMode === 'all' || selectedTables.has(table)}
+                                  onChange={() => {
+                                    if (restoreMode === 'all') {
+                                      setRestoreMode('selected');
+                                    }
+                                    handleTableToggle(table);
+                                  }}
+                                  disabled={restoreMode === 'all'}
+                                  className="rounded border-gray-300"
+                                />
+                              </td>
+                              <td className="px-3 py-2">
+                                <span className="text-sm font-mono">{table}</span>
+                              </td>
+                              <td className="px-3 py-2 text-right text-sm text-gray-600">
+                                {formatNumber(rowCount)}
+                              </td>
+                              <td className="px-3 py-2 text-right text-sm text-gray-600">
+                                {formatBytes(size)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      {restoreMode === 'selected' && selectedTables.size > 0 && (
+                        <tfoot className="bg-gray-50 border-t-2 border-gray-300">
+                          <tr className="font-semibold">
+                            <td colSpan={2} className="px-3 py-2 text-sm text-gray-900">
+                              Selected: {selectedTables.size} of {availableTables.length} tables
+                            </td>
+                            <td className="px-3 py-2 text-right text-sm text-gray-900">
+                              {(() => {
+                                const totalRows = Array.from(selectedTables).reduce((sum, table) => {
+                                  const info = tableInfo.find(t => t.name === table);
+                                  return sum + (info?.rowCount || 0);
+                                }, 0);
+                                return totalRows.toLocaleString();
+                              })()}
+                            </td>
+                            <td className="px-3 py-2 text-right text-sm text-gray-900">
+                              {(() => {
+                                const totalSize = Array.from(selectedTables).reduce((sum, table) => {
+                                  const info = tableInfo.find(t => t.name === table);
+                                  return sum + (info?.size || 0);
+                                }, 0);
+                                if (totalSize === 0) return '0 B';
+                                const k = 1024;
+                                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                                const i = Math.floor(Math.log(totalSize) / Math.log(k));
+                                return `${(totalSize / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
+                              })()}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
                   </div>
                   <div className="mt-4 flex justify-end space-x-2">
                     <button
                       onClick={() => {
                         setSelectedBackup(null);
                         setAvailableTables([]);
+                        setTableInfo([]);
                         setSelectedTables(new Set());
                         setError(null);
                       }}
