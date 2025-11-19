@@ -226,10 +226,11 @@ export class VerificationService {
     // - Constant performance regardless of table size
     // - row_to_json is efficient for serialization
     // - md5 hash computed once per row
+    // - Excludes 'created_at' from hash (application timestamp, not blockchain data)
     const query = `
       SELECT 
         ${pkColumn} as pk,
-        md5(row_to_json(t.*)::text) as row_hash,
+        md5((row_to_json(t.*)::jsonb - 'created_at')::text) as row_hash,
         row_to_json(t.*) as row_data
       FROM ${tableName} t
       ${whereClause}
@@ -259,10 +260,11 @@ export class VerificationService {
     // Use ANY() for efficient batch lookup with index
     // PostgreSQL handles implicit type coercion for the array
     // No need to filter NULLs here - they're already excluded from pkValues
+    // Excludes 'created_at' from hash (application timestamp, not blockchain data)
     const query = `
       SELECT 
         ${pkColumn} as pk,
-        md5(row_to_json(t.*)::text) as row_hash,
+        md5((row_to_json(t.*)::jsonb - 'created_at')::text) as row_hash,
         row_to_json(t.*) as row_data
       FROM ${tableName} t
       WHERE ${pkColumn} = ANY($1)

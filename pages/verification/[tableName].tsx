@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Navbar from '../../components/Navbar';
-import { ArrowLeft, AlertCircle, CheckCircle, Clock, XCircle, Square, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, AlertCircle, CheckCircle, Clock, XCircle, Square, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface VerificationDetails {
   job: {
@@ -51,6 +51,7 @@ export default function VerificationDetail() {
   const [error, setError] = useState<string | null>(null);
   const [mismatchPage, setMismatchPage] = useState(0);
   const [gapPage, setGapPage] = useState(0);
+  const [expandedGapRanges, setExpandedGapRanges] = useState<Set<number>>(new Set());
   const ITEMS_PER_PAGE = 100;
 
   useEffect(() => {
@@ -126,6 +127,73 @@ export default function VerificationDetail() {
         {JSON.stringify(obj, null, 2)}
       </pre>
     );
+  };
+
+  // Group consecutive gaps into ranges
+  const groupGapsIntoRanges = (gaps: Array<{ id: number; primaryKeyValue: string; sourceRow: Record<string, any>; detectedAt: string }>) => {
+    if (gaps.length === 0) return [];
+    
+    const sortedGaps = [...gaps].sort((a, b) => 
+      parseInt(a.primaryKeyValue) - parseInt(b.primaryKeyValue)
+    );
+    
+    const ranges: Array<{
+      id: number;
+      startPk: string;
+      endPk: string;
+      count: number;
+      gaps: typeof sortedGaps;
+      detectedAt: string;
+    }> = [];
+    
+    let currentRange = {
+      id: 0,
+      startPk: sortedGaps[0].primaryKeyValue,
+      endPk: sortedGaps[0].primaryKeyValue,
+      count: 1,
+      gaps: [sortedGaps[0]],
+      detectedAt: sortedGaps[0].detectedAt,
+    };
+    
+    for (let i = 1; i < sortedGaps.length; i++) {
+      const prevPk = parseInt(sortedGaps[i - 1].primaryKeyValue);
+      const currPk = parseInt(sortedGaps[i].primaryKeyValue);
+      
+      // If consecutive (difference of 1), add to current range
+      if (currPk === prevPk + 1) {
+        currentRange.endPk = sortedGaps[i].primaryKeyValue;
+        currentRange.count++;
+        currentRange.gaps.push(sortedGaps[i]);
+      } else {
+        // Save current range and start new one
+        ranges.push({ ...currentRange, id: ranges.length });
+        currentRange = {
+          id: ranges.length,
+          startPk: sortedGaps[i].primaryKeyValue,
+          endPk: sortedGaps[i].primaryKeyValue,
+          count: 1,
+          gaps: [sortedGaps[i]],
+          detectedAt: sortedGaps[i].detectedAt,
+        };
+      }
+    }
+    
+    // Add the last range
+    ranges.push({ ...currentRange, id: ranges.length });
+    
+    return ranges;
+  };
+
+  const toggleGapRange = (rangeId: number) => {
+    setExpandedGapRanges(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(rangeId)) {
+        newSet.delete(rangeId);
+      } else {
+        newSet.add(rangeId);
+      }
+      return newSet;
+    });
   };
 
   const PaginationControls = ({ 
@@ -335,7 +403,7 @@ export default function VerificationDetail() {
           </div>
         )}
 
-        {/* Gaps Section */}
+        {/* Gaps Section - Range View */}
         {gaps.length > 0 && (
           <div className="bg-white rounded-lg shadow p-6">
             <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
@@ -343,31 +411,104 @@ export default function VerificationDetail() {
               Gaps ({pagination.totalGaps})
             </h2>
             
-            <div className="space-y-4">
-              {gaps.map(gap => (
-                <div key={gap.id} className="border border-yellow-200 rounded-lg p-4 bg-yellow-50">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <span className="font-medium text-gray-900">PK: {gap.primaryKeyValue}</span>
-                      <span className="ml-4 text-sm text-gray-600">
-                        Detected: {formatDate(gap.detectedAt)}
-                      </span>
+            {(() => {
+              const gapRanges = groupGapsIntoRanges(gaps);
+              return (
+                <>
+                  {/* Summary Stats */}
+                  <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                      <div>
+                        <span className="font-medium text-gray-700">Total Missing:</span>
+                        <span className="ml-2 text-gray-900">{pagination.totalGaps} rows</span>
+                      </div>
+                      <div>
+                        <span className="font-medium text-gray-700">Gap Ranges:</span>
+                        <span className="ml-2 text-gray-900">{gapRanges.length}</span>
+                      </div>
+                      <div>
+                        <span className="font-medium text-gray-700">Largest Range:</span>
+                        <span className="ml-2 text-gray-900">
+                          {Math.max(...gapRanges.map(r => r.count))} rows
+                        </span>
+                      </div>
+                      <div>
+                        <span className="font-medium text-gray-700">Showing:</span>
+                        <span className="ml-2 text-gray-900">
+                          {gapPage * ITEMS_PER_PAGE + 1} - {Math.min((gapPage + 1) * ITEMS_PER_PAGE, pagination.totalGaps)} of {pagination.totalGaps}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                  
-                  <div>
-                    <p className="text-sm font-medium text-gray-700 mb-2">Source Row (Missing in Target):</p>
-                    {renderJSON(gap.sourceRow)}
-                  </div>
-                </div>
-              ))}
-            </div>
 
-            <PaginationControls
-              currentPage={gapPage}
-              totalItems={pagination.totalGaps}
-              onPageChange={setGapPage}
-            />
+                  {/* Gap Ranges */}
+                  <div className="space-y-3">
+                    {gapRanges.map(range => (
+                      <div key={range.id} className="border border-yellow-200 rounded-lg bg-yellow-50">
+                        {/* Range Header - Always Visible */}
+                        <div 
+                          className="p-4 cursor-pointer hover:bg-yellow-100 transition-colors"
+                          onClick={() => toggleGapRange(range.id)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-4">
+                              {expandedGapRanges.has(range.id) ? (
+                                <ChevronDown className="w-5 h-5 text-yellow-600" />
+                              ) : (
+                                <ChevronUp className="w-5 h-5 text-yellow-600" />
+                              )}
+                              <div>
+                                <span className="font-semibold text-gray-900">
+                                  {range.count === 1 ? (
+                                    `PK: ${range.startPk}`
+                                  ) : (
+                                    `PK Range: ${range.startPk} → ${range.endPk}`
+                                  )}
+                                </span>
+                                <span className="ml-3 text-sm text-gray-600">
+                                  ({range.count} {range.count === 1 ? 'row' : 'rows'} missing)
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-sm text-gray-600">
+                              {formatDate(range.detectedAt)}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Expanded Details */}
+                        {expandedGapRanges.has(range.id) && (
+                          <div className="border-t border-yellow-200 p-4 bg-white">
+                            <div className="space-y-3">
+                              {range.gaps.map((gap, idx) => (
+                                <div key={gap.id} className="border-l-4 border-yellow-400 pl-4">
+                                  <div className="mb-2">
+                                    <span className="font-medium text-gray-900">PK: {gap.primaryKeyValue}</span>
+                                    {range.count > 1 && (
+                                      <span className="ml-2 text-xs text-gray-500">
+                                        ({idx + 1} of {range.count})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs font-medium text-gray-700 mb-1">Source Row (Missing in Target):</p>
+                                  {renderJSON(gap.sourceRow)}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <PaginationControls
+                    currentPage={gapPage}
+                    totalItems={pagination.totalGaps}
+                    onPageChange={setGapPage}
+                  />
+                </>
+              );
+            })()}
           </div>
         )}
 
