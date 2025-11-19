@@ -277,6 +277,37 @@ export default function RestoreModal({
                 </div>
               </div>
 
+              {/* Clean Restore Option */}
+              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <div className="flex items-start">
+                  <input
+                    type="checkbox"
+                    id="cleanRestoreTableView"
+                    checked={cleanRestore}
+                    onChange={(e) => setCleanRestore(e.target.checked)}
+                    className="mt-1 mr-3 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <div className="flex-1">
+                    <label htmlFor="cleanRestoreTableView" className="text-sm font-medium text-gray-900 cursor-pointer">
+                      Clean Restore (Truncate/Drop existing data)
+                    </label>
+                    <p className="text-xs text-gray-600 mt-1">
+                      {cleanRestore ? (
+                        <>
+                          <strong>Enabled:</strong> Existing tables will be truncated (plain SQL) or dropped (custom format) before restore.
+                          This ensures a clean restore with no duplicate data.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Disabled:</strong> Data will be restored on top of existing tables. This may cause duplicates or conflicts.
+                          Enable this option for a clean restore.
+                        </>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* Table Selection */}
               {loadingTables ? (
                 <div className="text-center py-8 text-gray-500">Loading tables...</div>
@@ -566,13 +597,46 @@ export default function RestoreModal({
                           {new Date(backup.created).toLocaleString()}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => handleBackupSelect(backup)}
-                            disabled={restoring[backup.filename]}
-                            className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                          >
-                            {restoring[backup.filename] ? 'Restoring...' : 'Select Tables'}
-                          </button>
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => {
+                                const warning = cleanRestore
+                                  ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
+                                    `You are about to restore ALL tables from backup:\n` +
+                                    `  ${backup.filename}\n` +
+                                    `  Size: ${formatBytes(backup.size)}\n\n` +
+                                    `CLEAN RESTORE MODE:\n` +
+                                    `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                                    `  • All existing data will be PERMANENTLY DELETED\n` +
+                                    `  • This action CANNOT be undone\n\n` +
+                                    `Are you absolutely sure you want to proceed?`
+                                  : `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                                    `You are about to restore ALL tables from backup:\n` +
+                                    `  ${backup.filename}\n` +
+                                    `  Size: ${formatBytes(backup.size)}\n\n` +
+                                    `REGULAR RESTORE MODE:\n` +
+                                    `  • Data will be restored on top of existing tables\n` +
+                                    `  • This may cause duplicates or conflicts\n` +
+                                    `  • Consider using "Clean Restore" for a fresh restore\n\n` +
+                                    `Are you sure you want to proceed?`;
+                                
+                                if (confirm(warning)) {
+                                  onRestore(backup.filename, cleanRestore);
+                                }
+                              }}
+                              disabled={restoring[backup.filename]}
+                              className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                            >
+                              {restoring[backup.filename] ? 'Restoring...' : 'Restore'}
+                            </button>
+                            <button
+                              onClick={() => handleBackupSelect(backup)}
+                              disabled={restoring[backup.filename]}
+                              className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                            >
+                              Select Tables
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
