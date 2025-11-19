@@ -13,29 +13,19 @@ The verification worker is now configured to run in the same container as the Ne
 
 ## Behavior
 
-**The worker is enabled by default** and will start automatically when the Next.js server starts.
+**The worker is always enabled** and will start automatically when the Next.js server starts.
 
-### To Disable the Worker
+There is no configuration needed - the worker runs automatically as part of the Next.js application process.
 
-If you want to disable it, set:
+### How It Works
 
-```yaml
-env:
-  - name: ENABLE_VERIFICATION_WORKER
-    value: "false"
-```
+1. Next.js server starts
+2. `instrumentation.ts` hook is called
+3. Worker starts automatically in the same process
+4. Worker polls for verification jobs every 5 seconds
+5. Progress updates are written to the database every 5 seconds
 
-### To Explicitly Enable (Optional)
-
-You can also explicitly enable it (though it's on by default):
-
-```yaml
-env:
-  - name: ENABLE_VERIFICATION_WORKER
-    value: "true"
-```
-
-### Example K8s Deployment Update
+### Example K8s Deployment
 
 ```yaml
 apiVersion: apps/v1
@@ -50,17 +40,15 @@ spec:
       - name: nextjs-app
         image: your-registry/migration-dashboard:latest
         env:
-        # ... existing env vars ...
-        - name: ENABLE_VERIFICATION_WORKER
-          value: "true"
+        # ... existing env vars (SOURCE_DATABASE_URL, TARGET_DATABASE_URL, etc.) ...
 ```
 
 ## How It Works
 
 1. When the Next.js server starts, the `instrumentation.ts` hook runs
-2. It checks for `ENABLE_VERIFICATION_WORKER=true`
-3. If enabled, it dynamically imports and starts the `VerificationWorker`
-4. The worker runs in the background, polling for verification jobs
+2. It dynamically imports and starts the `VerificationWorker`
+3. The worker runs in the background, polling for verification jobs every 5 seconds
+4. Progress is updated in the database every 5 seconds during processing
 
 ## Verification
 
@@ -76,28 +64,19 @@ You should see:
 [verification-worker] Worker started
 ```
 
-## Disabling the Worker
-
-To disable, set:
-```yaml
-env:
-  - name: ENABLE_VERIFICATION_WORKER
-    value: "false"
-```
-
 ## Troubleshooting
 
 ### Worker not starting
 - Check logs for `[instrumentation]` messages
-- Verify `ENABLE_VERIFICATION_WORKER=true` is set
-- Check that `lib/` directory is in the Docker image
+- Verify `lib/` directory is in the Docker image
+- Check that instrumentation hook is enabled in `next.config.js`
 
 ### TypeScript import errors
 - Ensure `ts-node` is in `dependencies` (not `devDependencies`)
 - Verify `lib/` directory is copied in Dockerfile
 
 ### Worker crashes
-- Check database connection strings are set
+- Check database connection strings are set (SOURCE_DATABASE_URL, TARGET_DATABASE_URL)
 - Verify monitoring database is accessible
 - Check worker logs for specific errors
 

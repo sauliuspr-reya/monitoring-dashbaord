@@ -1,15 +1,17 @@
 # Worker Deployment Options
 
-## Current Issue
-The verification worker uses `tsx` which is not available in production. Here are the deployment options:
+## Current Implementation (Option 1)
 
-## Option 1: Run in Same Container as Next.js App (Recommended for Simplicity)
+The verification worker runs in the same container as the Next.js app using the instrumentation hook.
+
+## Option 1: Run in Same Container as Next.js App ✅ **IMPLEMENTED**
 
 **Pros:**
 - ✅ Simplest deployment (no separate containers)
 - ✅ Shares environment variables automatically
 - ✅ No additional K8s resources needed
 - ✅ Easy to debug (logs in same pod)
+- ✅ Always enabled - no configuration needed
 
 **Cons:**
 - ⚠️ Shares resources with web app (CPU/memory)
@@ -17,24 +19,21 @@ The verification worker uses `tsx` which is not available in production. Here ar
 - ⚠️ Single point of failure
 
 **Implementation:**
-Start worker when Next.js app starts:
+Worker starts automatically via Next.js instrumentation hook:
 
 ```typescript
-// pages/_app.tsx or server.js
-import { VerificationWorker } from '@/lib/worker/verification-worker';
+// instrumentation.ts (runs automatically on server start)
+import { VerificationWorker } from './lib/worker/verification-worker';
 
-if (process.env.ENABLE_VERIFICATION_WORKER === 'true') {
+export async function register() {
+  // Worker starts automatically - no configuration needed
   const worker = new VerificationWorker();
   worker.start().catch(console.error);
 }
 ```
 
-**K8s Config:**
-```yaml
-env:
-  - name: ENABLE_VERIFICATION_WORKER
-    value: "true"
-```
+**No K8s Config Needed:**
+The worker starts automatically when the Next.js app starts. No environment variables or configuration required.
 
 ---
 
