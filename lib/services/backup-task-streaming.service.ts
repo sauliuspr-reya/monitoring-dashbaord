@@ -39,9 +39,10 @@ export class BackupTaskStreamingService extends BackupTaskService {
     let stdoutLineCount = 0;
     let stderrLineCount = 0;
 
+    let encounteredError = false;
+    let firstErrorLine: string | null = null;
+
     try {
-      let encounteredError = false;
-      let firstErrorLine: string | null = null;
 
       const backupDir = await this.getBackupDir();
       await fs.mkdir(backupDir, { recursive: true });
@@ -484,6 +485,8 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
     let stdoutLineCount = 0;
     let stderrLineCount = 0;
+    let encounteredError = false;
+    let firstErrorLine: string | null = null;
 
     try {
       const conn = this.parseConnectionString(connectionString);
