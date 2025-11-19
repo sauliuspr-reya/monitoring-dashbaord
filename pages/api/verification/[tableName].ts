@@ -27,12 +27,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Get mismatches and gaps (paginated separately)
     const limit = parseInt(req.query.limit as string) || 100;
+    const gapLimit = parseInt(req.query.gapLimit as string) || 10000; // High limit for gaps (collapsed view)
     const mismatchOffset = parseInt(req.query.mismatchOffset as string) || 0;
     const gapOffset = parseInt(req.query.gapOffset as string) || 0;
 
     const [mismatches, gaps, mismatchCount, gapCount] = await Promise.all([
       service.getMismatches(job.id, limit, mismatchOffset),
-      service.getGaps(job.id, limit, gapOffset),
+      service.getGaps(job.id, gapLimit, gapOffset),
       service.getMismatchCount(job.id),
       service.getGapCount(job.id),
     ]);

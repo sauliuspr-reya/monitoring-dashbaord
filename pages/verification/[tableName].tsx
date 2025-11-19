@@ -50,7 +50,6 @@ export default function VerificationDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mismatchPage, setMismatchPage] = useState(0);
-  const [gapPage, setGapPage] = useState(0);
   const [expandedGapRanges, setExpandedGapRanges] = useState<Set<number>>(new Set());
   const ITEMS_PER_PAGE = 100;
 
@@ -61,14 +60,13 @@ export default function VerificationDetail() {
       return () => clearInterval(interval);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableName, mismatchPage, gapPage]);
+  }, [tableName, mismatchPage]);
 
   const fetchDetails = async () => {
     try {
       const mismatchOffset = mismatchPage * ITEMS_PER_PAGE;
-      const gapOffset = gapPage * ITEMS_PER_PAGE;
       const response = await fetch(
-        `/api/verification/${tableName}?mismatchOffset=${mismatchOffset}&gapOffset=${gapOffset}&limit=${ITEMS_PER_PAGE}`
+        `/api/verification/${tableName}?mismatchOffset=${mismatchOffset}&gapOffset=0&limit=${ITEMS_PER_PAGE}&gapLimit=10000`
       );
       if (!response.ok) {
         throw new Error('Failed to fetch verification details');
@@ -417,7 +415,7 @@ export default function VerificationDetail() {
                 <>
                   {/* Summary Stats */}
                   <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
                       <div>
                         <span className="font-medium text-gray-700">Total Missing:</span>
                         <span className="ml-2 text-gray-900">{pagination.totalGaps} rows</span>
@@ -430,12 +428,6 @@ export default function VerificationDetail() {
                         <span className="font-medium text-gray-700">Largest Range:</span>
                         <span className="ml-2 text-gray-900">
                           {Math.max(...gapRanges.map(r => r.count))} rows
-                        </span>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Showing:</span>
-                        <span className="ml-2 text-gray-900">
-                          {gapPage * ITEMS_PER_PAGE + 1} - {Math.min((gapPage + 1) * ITEMS_PER_PAGE, pagination.totalGaps)} of {pagination.totalGaps}
                         </span>
                       </div>
                     </div>
@@ -500,12 +492,6 @@ export default function VerificationDetail() {
                       </div>
                     ))}
                   </div>
-
-                  <PaginationControls
-                    currentPage={gapPage}
-                    totalItems={pagination.totalGaps}
-                    onPageChange={setGapPage}
-                  />
                 </>
               );
             })()}
