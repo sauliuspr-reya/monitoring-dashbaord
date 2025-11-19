@@ -13,7 +13,7 @@ interface RestoreModalProps {
   onClose: () => void;
   backups: BackupInfo[];
   loading: boolean;
-  onRestore: (filename: string, cleanRestore?: boolean) => void;
+  onRestore: (filename: string, cleanRestore?: boolean, tables?: string[]) => void;
   restoring: { [key: string]: boolean };
   formatBytes: (bytes: number) => string;
 }
@@ -75,10 +75,68 @@ export default function RestoreModal({
   const [cleanRestore, setCleanRestore] = useState(false);
   const [targetDbInfo, setTargetDbInfo] = useState<{ host: string; database: string; user: string; display: string } | null>(null);
   const [loadingDbInfo, setLoadingDbInfo] = useState(false);
+  
+  // Table selection state
+  const [selectedBackup, setSelectedBackup] = useState<BackupInfo | null>(null);
+  const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
+  const [loadingTables, setLoadingTables] = useState(false);
+  const [restoreMode, setRestoreMode] = useState<'all' | 'selected'>('all');
+  const [error, setError] = useState<string | null>(null);
 
   const filteredBackups = backups.filter(backup =>
     backup.filename.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Load tables from backup file
+  const loadTables = async (backup: BackupInfo) => {
+    setLoadingTables(true);
+    try {
+      const res = await fetch('/api/backup/list-tables', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: backup.filename }),
+      });
+      const data = await res.json();
+      if (res.ok && data.tables) {
+        setAvailableTables(data.tables);
+        setSelectedTables(new Set(data.tables)); // Select all by default
+      } else {
+        setAvailableTables([]);
+        setError('Failed to load tables from backup file');
+      }
+    } catch (err: any) {
+      setAvailableTables([]);
+      setError('Failed to load tables: ' + err.message);
+    } finally {
+      setLoadingTables(false);
+    }
+  };
+
+  const handleBackupSelect = (backup: BackupInfo) => {
+    setSelectedBackup(backup);
+    setRestoreMode('all');
+    setSelectedTables(new Set());
+    loadTables(backup);
+  };
+
+  const handleTableToggle = (table: string) => {
+    const newSelected = new Set(selectedTables);
+    if (newSelected.has(table)) {
+      newSelected.delete(table);
+    } else {
+      newSelected.add(table);
+    }
+    setSelectedTables(newSelected);
+  };
+
+  const handleSelectAll = () => {
+    setSelectedTables(new Set(availableTables));
+  };
+
+  const handleDeselectAll = () => {
+    setSelectedTables(new Set());
+  };
 
   // Fetch target database connection info when modal opens
   useEffect(() => {
@@ -129,6 +187,180 @@ export default function RestoreModal({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-6">
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+              {error}
+            </div>
+          )}
+
+          {selectedBackup ? (
+            /* Table Selection View */
+            <div>
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold">Select Tables to Restore</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Backup: <span className="font-mono">{selectedBackup.filename}</span>
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setSelectedBackup(null);
+                    setAvailableTables([]);
+                    setSelectedTables(new Set());
+                    setError(null);
+                  }}
+                  className="text-sm text-gray-600 hover:text-gray-800"
+                >
+                  ← Back to backups
+                </button>
+              </div>
+
+              {/* Restore Mode Selection */}
+              <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      checked={restoreMode === 'all'}
+                      onChange={() => {
+                        setRestoreMode('all');
+                        setSelectedTables(new Set(availableTables));
+                      }}
+                      className="mr-2"
+                    />
+                    <span className="text-sm font-medium">Restore All Tables</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      checked={restoreMode === 'selected'}
+                      onChange={() => setRestoreMode('selected')}
+                      className="mr-2"
+                    />
+                    <span className="text-sm font-medium">Restore Selected Tables ({selectedTables.size})</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Table Selection */}
+              {loadingTables ? (
+                <div className="text-center py-8 text-gray-500">Loading tables...</div>
+              ) : availableTables.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">No tables found in backup file</div>
+              ) : (
+                <div>
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm text-gray-600">
+                      {availableTables.length} table{availableTables.length !== 1 ? 's' : ''} available
+                    </div>
+                    {restoreMode === 'selected' && (
+                      <div className="space-x-2">
+                        <button
+                          onClick={handleSelectAll}
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          onClick={handleDeselectAll}
+                          className="text-xs text-blue-600 hover:text-blue-800"
+                        >
+                          Deselect All
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div className="border border-gray-200 rounded-lg max-h-96 overflow-auto">
+                    <div className="p-2 space-y-1">
+                      {availableTables.map((table) => (
+                        <label
+                          key={table}
+                          className={`flex items-center p-2 rounded hover:bg-gray-50 cursor-pointer ${
+                            restoreMode === 'selected' && !selectedTables.has(table) ? 'opacity-50' : ''
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={restoreMode === 'all' || selectedTables.has(table)}
+                            onChange={() => handleTableToggle(table)}
+                            disabled={restoreMode === 'all'}
+                            className="mr-2"
+                          />
+                          <span className="text-sm font-mono">{table}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-end space-x-2">
+                    <button
+                      onClick={() => {
+                        setSelectedBackup(null);
+                        setAvailableTables([]);
+                        setSelectedTables(new Set());
+                        setError(null);
+                      }}
+                      className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        const tablesToRestore = restoreMode === 'all' 
+                          ? undefined 
+                          : Array.from(selectedTables);
+                        
+                        if (restoreMode === 'selected' && tablesToRestore && tablesToRestore.length === 0) {
+                          setError('Please select at least one table to restore');
+                          return;
+                        }
+
+                        const dbInfo = targetDbInfo 
+                          ? `\n\nTarget Database: ${targetDbInfo.display}`
+                          : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
+                        
+                        const tableInfo = tablesToRestore 
+                          ? `\n\nTables to restore: ${tablesToRestore.length} table(s)\n  ${tablesToRestore.slice(0, 5).join(', ')}${tablesToRestore.length > 5 ? ` ... and ${tablesToRestore.length - 5} more` : ''}`
+                          : '\n\nTables to restore: All tables';
+                        
+                        const warning = cleanRestore
+                          ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
+                            `You are about to restore backup:\n` +
+                            `  ${selectedBackup.filename}\n` +
+                            `  Size: ${formatBytes(selectedBackup.size)}\n` +
+                            `${dbInfo}${tableInfo}\n\n` +
+                            `CLEAN RESTORE MODE:\n` +
+                            `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                            `  • All existing data will be PERMANENTLY DELETED\n` +
+                            `  • This action CANNOT be undone\n\n` +
+                            `Are you absolutely sure you want to proceed?`
+                          : `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                            `You are about to restore backup:\n` +
+                            `  ${selectedBackup.filename}\n` +
+                            `  Size: ${formatBytes(selectedBackup.size)}\n` +
+                            `${dbInfo}${tableInfo}\n\n` +
+                            `REGULAR RESTORE MODE:\n` +
+                            `  • Data will be restored on top of existing tables\n` +
+                            `  • This may cause duplicates or conflicts\n` +
+                            `  • Consider using "Clean Restore" for a fresh restore\n\n` +
+                            `Are you sure you want to proceed?`;
+                        
+                        if (confirm(warning)) {
+                          onRestore(selectedBackup.filename, cleanRestore, tablesToRestore);
+                        }
+                      }}
+                      disabled={restoring[selectedBackup.filename] || (restoreMode === 'selected' && selectedTables.size === 0)}
+                      className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {restoring[selectedBackup.filename] ? 'Restoring...' : 'Restore'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Backup List View */
+            <>
           {/* Options */}
           <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
             <div className="flex items-start">
@@ -210,42 +442,11 @@ export default function RestoreModal({
                         </td>
                         <td className="px-4 py-3 text-center">
                           <button
-                            onClick={() => {
-                              // Build detailed confirmation message
-                              const dbInfo = targetDbInfo 
-                                ? `\n\nTarget Database: ${targetDbInfo.display}`
-                                : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
-                              
-                              const warning = cleanRestore
-                                ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
-                                  `You are about to restore backup:\n` +
-                                  `  ${backup.filename}\n` +
-                                  `  Size: ${formatBytes(backup.size)}\n` +
-                                  `${dbInfo}\n\n` +
-                                  `CLEAN RESTORE MODE:\n` +
-                                  `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
-                                  `  • All existing data will be PERMANENTLY DELETED\n` +
-                                  `  • This action CANNOT be undone\n\n` +
-                                  `Are you absolutely sure you want to proceed?`
-                                : `⚠️ RESTORE OPERATION ⚠️\n\n` +
-                                  `You are about to restore backup:\n` +
-                                  `  ${backup.filename}\n` +
-                                  `  Size: ${formatBytes(backup.size)}\n` +
-                                  `${dbInfo}\n\n` +
-                                  `REGULAR RESTORE MODE:\n` +
-                                  `  • Data will be restored on top of existing tables\n` +
-                                  `  • This may cause duplicates or conflicts\n` +
-                                  `  • Consider using "Clean Restore" for a fresh restore\n\n` +
-                                  `Are you sure you want to proceed?`;
-                              
-                              if (confirm(warning)) {
-                                onRestore(backup.filename, cleanRestore);
-                              }
-                            }}
+                            onClick={() => handleBackupSelect(backup)}
                             disabled={restoring[backup.filename]}
                             className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
                           >
-                            {restoring[backup.filename] ? 'Restoring...' : 'Restore'}
+                            {restoring[backup.filename] ? 'Restoring...' : 'Select Tables'}
                           </button>
                         </td>
                       </tr>
@@ -255,6 +456,8 @@ export default function RestoreModal({
               </table>
             </div>
           </div>
+            </>
+          )}
         </div>
 
         {/* Footer */}

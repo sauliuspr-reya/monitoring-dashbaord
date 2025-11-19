@@ -17,33 +17,60 @@ export default async function handler(
 
   try {
     // Try to get connection strings from Kubernetes secret
-    const namespace = 'postgres-replication';
-    const secretName = 'postgres-replication-secrets';
+    // First try the actual secret name, then fall back to the old name for compatibility
+    const namespace = process.env.KUBERNETES_NAMESPACE || 'reya-mainnet';
+    const secretName = process.env.MONITORING_DASHBOARD_SECRET || 'reya-mainnet-monitoring-dashboard-secret';
+    const fallbackSecretName = 'postgres-replication-secrets';
+    const fallbackNamespace = 'postgres-replication';
     
     console.log(`[config/connections] Attempting to read K8s secret: ${namespace}/${secretName}`);
 
     try {
-      const sourceUrlResult = await execAsync(
-        `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.source-database-url}' | base64 -d`
-      );
-      const destUrlResult = await execAsync(
-        `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.target-database-url}' | base64 -d`
-      );
-
-      const sourceUrl = sourceUrlResult.stdout.trim();
-      const destUrl = destUrlResult.stdout.trim();
+      let sourceUrl = '';
+      let destUrl = '';
       
-      console.log('[config/connections] ✓ Successfully read K8s secret');
-      console.log(`[config/connections]   Source: ${sourceUrl ? sourceUrl.replace(/:[^:@]+@/, ':***@').substring(0, 50) + '...' : 'empty'}`);
-      console.log(`[config/connections]   Target: ${destUrl ? destUrl.replace(/:[^:@]+@/, ':***@').substring(0, 50) + '...' : 'empty'}`);
+      // Try primary secret first
+      try {
+        const sourceUrlResult = await execAsync(
+          `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.source-database-url}' 2>/dev/null | base64 -d`
+        );
+        const destUrlResult = await execAsync(
+          `kubectl get secret -n ${namespace} ${secretName} -o jsonpath='{.data.target-database-url}' 2>/dev/null | base64 -d`
+        );
+        sourceUrl = sourceUrlResult.stdout.trim();
+        destUrl = destUrlResult.stdout.trim();
+      } catch (primaryError) {
+        // Try fallback secret
+        try {
+          const sourceUrlResult = await execAsync(
+            `kubectl get secret -n ${fallbackNamespace} ${fallbackSecretName} -o jsonpath='{.data.source-database-url}' 2>/dev/null | base64 -d`
+          );
+          const destUrlResult = await execAsync(
+            `kubectl get secret -n ${fallbackNamespace} ${fallbackSecretName} -o jsonpath='{.data.target-database-url}' 2>/dev/null | base64 -d`
+          );
+          sourceUrl = sourceUrlResult.stdout.trim();
+          destUrl = destUrlResult.stdout.trim();
+        } catch (fallbackError) {
+          throw primaryError; // Throw original error
+        }
+      }
+      
+      if (sourceUrl && destUrl) {
+        console.log('[config/connections] ✓ Successfully read K8s secret');
+        console.log(`[config/connections]   Source: ${sourceUrl.replace(/:[^:@]+@/, ':***@').substring(0, 50) + '...'}`);
+        console.log(`[config/connections]   Target: ${destUrl.replace(/:[^:@]+@/, ':***@').substring(0, 50) + '...'}`);
 
-      res.status(200).json({
-        sourceDbConnection: sourceUrl,
-        targetDbConnection: destUrl,
-      });
+        res.status(200).json({
+          sourceDbConnection: sourceUrl,
+          targetDbConnection: destUrl,
+        });
+        return;
+      } else {
+        throw new Error('Secret found but connection strings are empty');
+      }
     } catch (kubectlError: any) {
       // If kubectl fails, fall back to environment variables
-      console.log('[config/connections] ⚠️  kubectl failed (K8s not available or secret not found)');
+      console.log('[config/connections] ⚠️  kubectl failed or secret not found');
       console.log(`[config/connections]   Error: ${kubectlError.message}`);
       console.log('[config/connections]   Falling back to environment variables');
       

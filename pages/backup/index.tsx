@@ -303,22 +303,24 @@ export default function BackupPage() {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
-  const handleRestoreFromModal = async (filename: string, cleanRestore: boolean = false) => {
+  const handleRestoreFromModal = async (filename: string, cleanRestore: boolean = false, tables?: string[]) => {
     try {
       setRestoring(prev => ({ ...prev, [filename]: true }));
       setError(null);
       setSuccess(null);
 
-      console.log('[BackupPage] Initiating restore for:', filename);
+      console.log('[BackupPage] Initiating restore for:', filename, tables ? `with ${tables.length} tables` : 'all tables');
 
-      const res = await fetch('/api/backup/restore', {
+      // Use restore-tables API if specific tables are selected, otherwise use regular restore
+      const endpoint = tables && tables.length > 0 ? '/api/backup/restore-tables' : '/api/backup/restore';
+      const body = tables && tables.length > 0
+        ? { filename, tables, cleanRestore, dryRun: false }
+        : { filename, cleanRestore, dryRun: false };
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filename,
-          cleanRestore,
-          dryRun: false,
-        }),
+        body: JSON.stringify(body),
       });
 
       const data = await res.json();

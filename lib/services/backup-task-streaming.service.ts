@@ -493,6 +493,8 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
       // Check if clean restore is requested (from metadata)
       const cleanRestore = task.metadata?.cleanRestore === true;
+      // Check if specific tables should be restored (from metadata)
+      const restoreTables = task.metadata?.restoreTables as string[] | undefined;
       
       if (isCustomFormat) {
         // Use pg_restore for custom format
@@ -509,6 +511,17 @@ export class BackupTaskStreamingService extends BackupTaskService {
         // Add --clean and --if-exists for clean restore
         if (cleanRestore) {
           args.push('--clean', '--if-exists');
+        }
+        
+        // Add table selection if specific tables are requested
+        if (restoreTables && restoreTables.length > 0) {
+          for (const table of restoreTables) {
+            // pg_restore uses -t for table selection
+            // Format: schema.table or just table (assumes public schema)
+            args.push('-t', table);
+          }
+          stdoutLineCount++;
+          await taskLoggerService.appendLog(taskId, 'stdout', `Restoring ${restoreTables.length} selected table(s): ${restoreTables.join(', ')}`, stdoutLineCount).catch(() => {});
         }
         
         args.push(task.filepath);
