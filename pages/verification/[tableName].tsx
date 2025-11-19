@@ -12,6 +12,7 @@ interface VerificationDetails {
     batchSize: number;
     cooldownMs: number;
     primaryKeyColumn: string;
+    startFromPkValue: string | null;
     lastCheckedPkValue: string | null;
     totalRowsChecked: string;
     mismatchesFound: number;
@@ -248,7 +249,8 @@ export default function VerificationDetail() {
           </div>
 
           <div className="mt-6 pt-6 border-t border-gray-200">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              {/* Row 1: Timestamps and Last Checked PK */}
               <div>
                 <span className="font-medium text-gray-700">Started:</span>
                 <span className="ml-2 text-gray-600">{formatDate(job.startedAt)}</span>
@@ -257,12 +259,16 @@ export default function VerificationDetail() {
                 <span className="font-medium text-gray-700">Last Updated:</span>
                 <span className="ml-2 text-gray-600">{formatDate(job.updatedAt)}</span>
               </div>
-              {job.completedAt && (
-                <div>
-                  <span className="font-medium text-gray-700">Completed:</span>
-                  <span className="ml-2 text-gray-600">{formatDate(job.completedAt)}</span>
-                </div>
-              )}
+              <div>
+                <span className="font-medium text-gray-700">Completed:</span>
+                <span className="ml-2 text-gray-600">{job.completedAt ? formatDate(job.completedAt) : 'N/A'}</span>
+              </div>
+              <div>
+                <span className="font-medium text-gray-700">Last Checked PK:</span>
+                <span className="ml-2 text-gray-600">{job.lastCheckedPkValue || 'N/A'}</span>
+              </div>
+              
+              {/* Row 2: Configuration values */}
               <div>
                 <span className="font-medium text-gray-700">Batch Size:</span>
                 <span className="ml-2 text-gray-600">{job.batchSize} rows</span>
@@ -271,12 +277,10 @@ export default function VerificationDetail() {
                 <span className="font-medium text-gray-700">Cooldown:</span>
                 <span className="ml-2 text-gray-600">{job.cooldownMs}ms</span>
               </div>
-              {job.lastCheckedPkValue && (
-                <div>
-                  <span className="font-medium text-gray-700">Last Checked PK:</span>
-                  <span className="ml-2 text-gray-600">{job.lastCheckedPkValue}</span>
-                </div>
-              )}
+              <div>
+                <span className="font-medium text-gray-700">Start From:</span>
+                <span className="ml-2 text-gray-600">{job.startFromPkValue || 'beginning'}</span>
+              </div>
             </div>
           </div>
 

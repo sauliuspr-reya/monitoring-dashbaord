@@ -21,6 +21,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       batchSize: job.batch_size,
       cooldownMs: job.cooldown_ms,
       primaryKeyColumn: job.primary_key_column,
+      startFromPkValue: job.start_from_pk_value,
       lastCheckedPkValue: job.last_checked_pk_value,
       totalRowsChecked: job.total_rows_checked.toString(),
       mismatchesFound: job.mismatches_found,

@@ -9,6 +9,7 @@ export interface VerificationJob {
   batch_size: number;
   cooldown_ms: number;
   primary_key_column: string;
+  start_from_pk_value: string | null;
   last_checked_pk_value: string | null;
   total_rows_checked: bigint;
   mismatches_found: number;
@@ -59,6 +60,7 @@ export interface VerificationConfig {
   batchSize: number;
   cooldownMs: number;
   primaryKeyColumn?: string;
+  startFromPkValue?: string;
 }
 
 export interface VerificationProgress {

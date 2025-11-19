@@ -10,7 +10,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { tableName, batchSize = 1000, cooldownMs = 100, primaryKeyColumn } = req.body;
+  const { tableName, batchSize = 1000, cooldownMs = 100, primaryKeyColumn, startFromPkValue } = req.body;
 
   if (!tableName) {
     return res.status(400).json({ error: 'tableName is required' });
@@ -46,6 +46,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       batchSize,
       cooldownMs,
       primaryKeyColumn,
+      startFromPkValue,
     });
 
     console.log(`[verification/start] Started verification for table: ${tableName}`);

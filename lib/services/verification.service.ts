@@ -53,7 +53,7 @@ export class VerificationService {
    * Start a new verification job or resume an existing one
    */
   async startVerification(config: VerificationConfig): Promise<VerificationJob> {
-    const { tableName, batchSize, cooldownMs, primaryKeyColumn } = config;
+    const { tableName, batchSize, cooldownMs, primaryKeyColumn, startFromPkValue } = config;
 
     // Check if job already exists
     const existingJob = await this.getJobByTableName(tableName);
@@ -61,20 +61,34 @@ export class VerificationService {
     if (existingJob) {
       // Resume existing job if stopped or errored (with updated config)
       if (existingJob.status === 'stopped' || existingJob.status === 'error') {
-        await this.monitoringPool.query(
-          `UPDATE table_verification_jobs 
-           SET status = 'running', 
-               batch_size = $1, 
-               cooldown_ms = $2, 
-               updated_at = NOW()
-           WHERE id = $3`,
-          [batchSize, cooldownMs, existingJob.id]
-        );
+        // If startFromPkValue is provided, update the last_checked_pk_value
+        const updateQuery = startFromPkValue
+          ? `UPDATE table_verification_jobs 
+             SET status = 'running', 
+                 batch_size = $1, 
+                 cooldown_ms = $2,
+                 last_checked_pk_value = $4,
+                 updated_at = NOW()
+             WHERE id = $3`
+          : `UPDATE table_verification_jobs 
+             SET status = 'running', 
+                 batch_size = $1, 
+                 cooldown_ms = $2, 
+                 updated_at = NOW()
+             WHERE id = $3`;
+        
+        const params = startFromPkValue
+          ? [batchSize, cooldownMs, existingJob.id, startFromPkValue]
+          : [batchSize, cooldownMs, existingJob.id];
+        
+        await this.monitoringPool.query(updateQuery, params);
+        
         return { 
           ...existingJob, 
           status: 'running',
           batch_size: batchSize,
           cooldown_ms: cooldownMs,
+          last_checked_pk_value: startFromPkValue || existingJob.last_checked_pk_value,
         };
       }
 
@@ -111,13 +125,22 @@ export class VerificationService {
       }
     }
 
-    const result = await this.monitoringPool.query(
-      `INSERT INTO table_verification_jobs 
-       (table_name, status, batch_size, cooldown_ms, primary_key_column)
-       VALUES ($1, 'running', $2, $3, $4)
-       RETURNING *`,
-      [tableName, batchSize, cooldownMs, pkColumnName]
-    );
+    // Create new job with optional starting PK value
+    const insertQuery = startFromPkValue
+      ? `INSERT INTO table_verification_jobs 
+         (table_name, status, batch_size, cooldown_ms, primary_key_column, start_from_pk_value, last_checked_pk_value)
+         VALUES ($1, 'running', $2, $3, $4, $5, $5)
+         RETURNING *`
+      : `INSERT INTO table_verification_jobs 
+         (table_name, status, batch_size, cooldown_ms, primary_key_column)
+         VALUES ($1, 'running', $2, $3, $4)
+         RETURNING *`;
+    
+    const params = startFromPkValue
+      ? [tableName, batchSize, cooldownMs, pkColumnName, startFromPkValue]
+      : [tableName, batchSize, cooldownMs, pkColumnName];
+
+    const result = await this.monitoringPool.query(insertQuery, params);
 
     return result.rows[0];
   }
