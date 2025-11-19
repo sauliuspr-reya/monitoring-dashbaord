@@ -52,6 +52,21 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # Next.js standalone doesn't include lib/ by default, so we need to copy it
 COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
 
+# Copy ts-node and its dependencies (needed for runtime TypeScript execution)
+# The standalone build doesn't include ts-node, so we need to copy it from node_modules
+RUN mkdir -p ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/ts-node ./node_modules/ts-node
+
+# Copy ts-node's dependencies that might not be in standalone build
+# Use a shell script to copy only if they exist
+RUN --mount=from=builder,source=/app/node_modules,target=/tmp/node_modules \
+    if [ -d /tmp/node_modules/make-error ]; then cp -r /tmp/node_modules/make-error ./node_modules/; fi && \
+    if [ -d /tmp/node_modules/diff ]; then cp -r /tmp/node_modules/diff ./node_modules/; fi && \
+    if [ -d /tmp/node_modules/yn ]; then cp -r /tmp/node_modules/yn ./node_modules/; fi && \
+    if [ -d /tmp/node_modules/create-require ]; then cp -r /tmp/node_modules/create-require ./node_modules/; fi && \
+    if [ -d /tmp/node_modules/@cspotcode ]; then cp -r /tmp/node_modules/@cspotcode ./node_modules/; fi && \
+    chown -R nextjs:nodejs ./node_modules
+
 USER nextjs
 
 # PORT can be overridden via environment variable, default to 3000
