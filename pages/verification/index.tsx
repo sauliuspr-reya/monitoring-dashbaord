@@ -9,7 +9,7 @@ interface VerificationJob {
   status: string;
   batchSize: number;
   cooldownMs: number;
-  primaryKeyColumn: string;
+  primaryKeyColumns: string[];
   startFromPkValue: string | null;
   lastCheckedPkValue: string | null;
   totalRowsChecked: string;
@@ -358,7 +358,11 @@ export default function VerificationDashboard() {
                       </div>
                       <div>
                         <p className="text-sm text-gray-600">Primary Key</p>
-                        <p className="text-lg font-semibold text-gray-900">{job.primaryKeyColumn}</p>
+                        <p className="text-lg font-semibold text-gray-900">
+                          {job.primaryKeyColumns.length > 1
+                            ? `(${job.primaryKeyColumns.join(', ')})`
+                            : job.primaryKeyColumns[0]}
+                        </p>
                       </div>
                     </div>
 

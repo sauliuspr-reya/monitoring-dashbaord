@@ -16,10 +16,23 @@ export class VerificationService {
   }
 
   /**
-   * Auto-detect primary key column and its data type for a table
+   * Build composite key expression for SQL queries
+   * For single column: returns "column_name"
+   * For composite: returns "(col1::text || '::' || col2::text)"
+   */
+  private buildPkExpression(pkColumns: string[]): string {
+    if (pkColumns.length === 1) {
+      return pkColumns[0];
+    }
+    return `(${pkColumns.map(col => `${col}::text`).join(` || '::' || `)})`;
+  }
+
+  /**
+   * Auto-detect primary key columns and their data types for a table
+   * Supports both single and composite primary keys
    * Uses PostgreSQL system catalogs for accurate detection
    */
-  async detectPrimaryKey(pool: Pool, tableName: string): Promise<{ column: string; dataType: string }> {
+  async detectPrimaryKey(pool: Pool, tableName: string): Promise<{ columns: string[]; dataTypes: string[] }> {
     const [schema, table] = tableName.includes('.') 
       ? tableName.split('.') 
       : ['public', tableName];
@@ -27,13 +40,13 @@ export class VerificationService {
     const query = `
       SELECT 
         a.attname as column_name,
-        format_type(a.atttypid, a.atttypmod) as data_type
+        format_type(a.atttypid, a.atttypmod) as data_type,
+        array_position(i.indkey, a.attnum) as key_position
       FROM pg_index i
       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
       WHERE i.indrelid = $1::regclass
         AND i.indisprimary
-      ORDER BY a.attnum
-      LIMIT 1
+      ORDER BY array_position(i.indkey, a.attnum)
     `;
 
     const fullTableName = schema === 'public' ? table : `${schema}.${table}`;
@@ -44,8 +57,8 @@ export class VerificationService {
     }
 
     return {
-      column: result.rows[0].column_name,
-      dataType: result.rows[0].data_type
+      columns: result.rows.map((r: any) => r.column_name),
+      dataTypes: result.rows.map((r: any) => r.data_type)
     };
   }
 
@@ -53,7 +66,7 @@ export class VerificationService {
    * Start a new verification job or resume an existing one
    */
   async startVerification(config: VerificationConfig): Promise<VerificationJob> {
-    const { tableName, batchSize, cooldownMs, primaryKeyColumn, startFromPkValue } = config;
+    const { tableName, batchSize, cooldownMs, primaryKeyColumn, primaryKeyColumns, startFromPkValue } = config;
 
     // Check if job already exists
     const existingJob = await this.getJobByTableName(tableName);
@@ -102,11 +115,14 @@ export class VerificationService {
     }
 
     // Create new job - use provided PK or auto-detect
-    let pkColumnName: string;
+    let pkColumns: string[];
 
-    if (primaryKeyColumn) {
-      // Use the provided primary key column
-      pkColumnName = primaryKeyColumn;
+    if (primaryKeyColumns && primaryKeyColumns.length > 0) {
+      // Use provided primary key columns
+      pkColumns = primaryKeyColumns;
+    } else if (primaryKeyColumn) {
+      // Use single provided column (convert to array)
+      pkColumns = [primaryKeyColumn];
     } else {
       // Auto-detect primary key from source database
       const sourceUrl = process.env.SOURCE_DATABASE_URL;
@@ -115,11 +131,11 @@ export class VerificationService {
       }
 
       const sourcePool = createSourceTargetPool(sourceUrl);
-      let pkInfo: { column: string; dataType: string };
+      let pkInfo: { columns: string[]; dataTypes: string[] };
 
       try {
         pkInfo = await this.detectPrimaryKey(sourcePool, tableName);
-        pkColumnName = pkInfo.column;
+        pkColumns = pkInfo.columns;
       } finally {
         await sourcePool.end();
       }
@@ -128,17 +144,17 @@ export class VerificationService {
     // Create new job with optional starting PK value
     const insertQuery = startFromPkValue
       ? `INSERT INTO table_verification_jobs 
-         (table_name, status, batch_size, cooldown_ms, primary_key_column, start_from_pk_value, last_checked_pk_value)
+         (table_name, status, batch_size, cooldown_ms, primary_key_columns, start_from_pk_value, last_checked_pk_value)
          VALUES ($1, 'running', $2, $3, $4, $5, $5)
          RETURNING *`
       : `INSERT INTO table_verification_jobs 
-         (table_name, status, batch_size, cooldown_ms, primary_key_column)
+         (table_name, status, batch_size, cooldown_ms, primary_key_columns)
          VALUES ($1, 'running', $2, $3, $4)
          RETURNING *`;
     
     const params = startFromPkValue
-      ? [tableName, batchSize, cooldownMs, pkColumnName, startFromPkValue]
-      : [tableName, batchSize, cooldownMs, pkColumnName];
+      ? [tableName, batchSize, cooldownMs, pkColumns, startFromPkValue]
+      : [tableName, batchSize, cooldownMs, pkColumns];
 
     const result = await this.monitoringPool.query(insertQuery, params);
 
@@ -202,21 +218,26 @@ export class VerificationService {
   /**
    * Fetch batch of rows from source database with hash
    * Optimized query using row_to_json and md5 for fast comparison
+   * Supports both single and composite primary keys
    */
   async fetchSourceBatch(
     pool: Pool,
     tableName: string,
-    pkColumn: string,
+    pkColumns: string[],
     lastPkValue: string | null,
     batchSize: number
   ): Promise<RowWithHash[]> {
+    // Build composite key expression
+    const pkExpression = this.buildPkExpression(pkColumns);
+    
     // Keyset pagination: Use simple > comparison without explicit casting
     // PostgreSQL handles implicit type coercion (TEXT → native column type)
     // This works for all PK types: INT, BIGINT, VARCHAR, UUID, etc.
+    // For composite keys, we concatenate with '::' delimiter
     // Skip NULL primary keys to avoid comparison issues
     const whereClause = lastPkValue 
-      ? `WHERE ${pkColumn} IS NOT NULL AND ${pkColumn} > $1` 
-      : `WHERE ${pkColumn} IS NOT NULL`;
+      ? `WHERE ${pkExpression} IS NOT NULL AND ${pkExpression} > $1` 
+      : `WHERE ${pkExpression} IS NOT NULL`;
     const params: any[] = lastPkValue ? [lastPkValue, batchSize] : [batchSize];
     const limitParamIndex = lastPkValue ? '$2' : '$1';
 
@@ -229,12 +250,12 @@ export class VerificationService {
     // - Excludes 'created_at' from hash (application timestamp, not blockchain data)
     const query = `
       SELECT 
-        ${pkColumn} as pk,
+        ${pkExpression} as pk,
         md5((row_to_json(t.*)::jsonb - 'created_at')::text) as row_hash,
         row_to_json(t.*) as row_data
       FROM ${tableName} t
       ${whereClause}
-      ORDER BY ${pkColumn} ASC
+      ORDER BY ${pkExpression} ASC
       LIMIT ${limitParamIndex}
     `;
 
@@ -245,17 +266,21 @@ export class VerificationService {
   /**
    * Fetch rows from target database by primary key list
    * Optimized using ANY() for batch lookup
+   * Supports both single and composite primary keys
    * Note: pkValues come from source query which already filters out NULLs
    */
   async fetchTargetRows(
     pool: Pool,
     tableName: string,
-    pkColumn: string,
+    pkColumns: string[],
     pkValues: any[]
   ): Promise<RowWithHash[]> {
     if (pkValues.length === 0) {
       return [];
     }
+
+    // Build composite key expression
+    const pkExpression = this.buildPkExpression(pkColumns);
 
     // Use ANY() for efficient batch lookup with index
     // PostgreSQL handles implicit type coercion for the array
@@ -263,12 +288,12 @@ export class VerificationService {
     // Excludes 'created_at' from hash (application timestamp, not blockchain data)
     const query = `
       SELECT 
-        ${pkColumn} as pk,
+        ${pkExpression} as pk,
         md5((row_to_json(t.*)::jsonb - 'created_at')::text) as row_hash,
         row_to_json(t.*) as row_data
       FROM ${tableName} t
-      WHERE ${pkColumn} = ANY($1)
-      ORDER BY ${pkColumn} ASC
+      WHERE ${pkExpression} = ANY($1)
+      ORDER BY ${pkExpression} ASC
     `;
 
     const result = await pool.query(query, [pkValues]);
@@ -441,7 +466,7 @@ export class VerificationService {
     const result = await this.monitoringPool.query(
       `SELECT * FROM table_verification_mismatches 
        WHERE job_id = $1 
-       ORDER BY CAST(primary_key_value AS BIGINT) ASC 
+       ORDER BY primary_key_value ASC 
        LIMIT $2 OFFSET $3`,
       [jobId, limit, offset]
     );
@@ -456,7 +481,7 @@ export class VerificationService {
     const result = await this.monitoringPool.query(
       `SELECT * FROM table_verification_gaps 
        WHERE job_id = $1 
-       ORDER BY CAST(primary_key_value AS BIGINT) ASC 
+       ORDER BY primary_key_value ASC 
        LIMIT $2 OFFSET $3`,
       [jobId, limit, offset]
     );

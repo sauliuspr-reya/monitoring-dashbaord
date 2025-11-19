@@ -8,7 +8,7 @@ export interface VerificationJob {
   status: VerificationStatus;
   batch_size: number;
   cooldown_ms: number;
-  primary_key_column: string;
+  primary_key_columns: string[]; // Array of PK columns (supports composite keys)
   start_from_pk_value: string | null;
   last_checked_pk_value: string | null;
   total_rows_checked: bigint;
@@ -59,7 +59,8 @@ export interface VerificationConfig {
   tableName: string;
   batchSize: number;
   cooldownMs: number;
-  primaryKeyColumn?: string;
+  primaryKeyColumn?: string; // Deprecated: for backward compatibility
+  primaryKeyColumns?: string[]; // Array of PK columns for composite keys
   startFromPkValue?: string;
 }
 

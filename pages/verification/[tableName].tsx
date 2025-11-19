@@ -11,7 +11,7 @@ interface VerificationDetails {
     status: string;
     batchSize: number;
     cooldownMs: number;
-    primaryKeyColumn: string;
+    primaryKeyColumns: string[];
     startFromPkValue: string | null;
     lastCheckedPkValue: string | null;
     totalRowsChecked: string;
@@ -310,7 +310,11 @@ export default function VerificationDetail() {
             </div>
             <div>
               <p className="text-sm text-gray-600 mb-1">Primary Key</p>
-              <p className="text-2xl font-bold text-gray-900">{job.primaryKeyColumn}</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {job.primaryKeyColumns.length > 1
+                  ? `(${job.primaryKeyColumns.join(', ')})`
+                  : job.primaryKeyColumns[0]}
+              </p>
             </div>
           </div>
 

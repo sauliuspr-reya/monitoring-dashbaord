@@ -10,7 +10,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { tableName, batchSize = 1000, cooldownMs = 100, primaryKeyColumn, startFromPkValue } = req.body;
+  const { tableName, batchSize = 1000, cooldownMs = 100, primaryKeyColumn, primaryKeyColumns, startFromPkValue } = req.body;
 
   if (!tableName) {
     return res.status(400).json({ error: 'tableName is required' });
@@ -46,6 +46,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       batchSize,
       cooldownMs,
       primaryKeyColumn,
+      primaryKeyColumns,
       startFromPkValue,
     });
 
@@ -59,7 +60,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         status: job.status,
         batchSize: job.batch_size,
         cooldownMs: job.cooldown_ms,
-        primaryKeyColumn: job.primary_key_column,
+        primaryKeyColumns: job.primary_key_columns,
         totalRowsChecked: job.total_rows_checked.toString(),
         mismatchesFound: job.mismatches_found,
         gapsFound: job.gaps_found,

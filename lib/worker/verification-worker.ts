@@ -66,11 +66,14 @@ export class VerificationWorker {
         }
 
         this.currentJobId = job.id;
+        const pkColumns = job.primary_key_columns;
+        const pkDisplay = pkColumns.length > 1 ? `(${pkColumns.join(', ')})` : pkColumns[0];
+        
         console.log(`[verification-worker] Processing job ${job.id} for table: ${job.table_name}`);
-        console.log(`[verification-worker] Detected primary key: ${job.primary_key_column}`);
+        console.log(`[verification-worker] Detected primary key: ${pkDisplay}`);
         console.log(`[verification-worker] Batch size: ${job.batch_size}, Cooldown: ${job.cooldown_ms}ms`);
         if (job.last_checked_pk_value) {
-          console.log(`[verification-worker] Resuming from ${job.primary_key_column}=${job.last_checked_pk_value}`);
+          console.log(`[verification-worker] Resuming from ${pkDisplay}=${job.last_checked_pk_value}`);
         }
 
         // Initialize database connections
@@ -114,7 +117,7 @@ export class VerificationWorker {
 
           // Build log message with starting PK value
           const startPkInfo = result.startPkValue 
-            ? ` starting from ${job.primary_key_column}=${result.startPkValue}` 
+            ? ` starting from ${pkDisplay}=${result.startPkValue}` 
             : '';
           const mismatchInfo = result.mismatchesFound ? ` [${result.mismatchesFound} mismatches]` : '';
           const gapInfo = result.gapsFound ? ` [${result.gapsFound} gaps]` : '';
@@ -304,18 +307,21 @@ export class VerificationWorker {
       id: jobId,
       table_name,
       batch_size,
-      primary_key_column,
+      primary_key_columns,
       last_checked_pk_value,
       total_rows_checked,
       mismatches_found,
       gaps_found,
     } = job;
 
+    // Get PK columns
+    const pkColumns = primary_key_columns;
+
     // 1. Fetch batch from source
     const sourceRows = await this.service.fetchSourceBatch(
       this.sourcePool,
       table_name,
-      primary_key_column,
+      pkColumns,
       last_checked_pk_value,
       batch_size
     );
@@ -334,7 +340,7 @@ export class VerificationWorker {
     const targetRows = await this.service.fetchTargetRows(
       this.targetPool,
       table_name,
-      primary_key_column,
+      pkColumns,
       sourcePKs
     );
 
