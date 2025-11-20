@@ -3,6 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { BackupTaskService, BackupTask } from './backup-task.service';
 import { taskLoggerService } from './task-logger.service';
+import { createSourceTargetPool } from '@/lib/db/connection';
 
 type TableIdentifier = { schema: string; table: string };
 
@@ -105,6 +106,18 @@ export class BackupTaskStreamingService extends BackupTaskService {
         // Use imported createSourceTargetPool
         dbPool = createSourceTargetPool(connectionString);
         dbClient = await dbPool.connect();
+
+        // Check if we are on a Read Replica
+        const recoveryResult = await dbClient.query('SELECT pg_is_in_recovery()');
+        const isReplica = recoveryResult.rows[0]?.pg_is_in_recovery === true;
+
+        if (isReplica) {
+          throw new Error(
+            'Cannot create a consistent backup with replication slot from a Read Replica. ' +
+            'Logical replication slots must be created on the Primary database. ' +
+            'Please update SOURCE_DATABASE_URL to point to the Primary instance.'
+          );
+        }
 
         // Start transaction
         await dbClient.query('BEGIN');
