@@ -4,15 +4,236 @@ import {
   VerificationJob,
   VerificationMismatch,
   VerificationGap,
+  VerificationGapRange,
+  GapRecheckResult,
   RowWithHash,
   VerificationConfig,
 } from '../types/verification.types';
+
+type TimestampStrategy = 'timestamp' | 'timestamptz' | 'epoch_seconds' | 'epoch_millis';
+
+interface TimestampColumnInfo {
+  columnName: string;
+  dataType: string;
+  strategy: TimestampStrategy;
+  score: number;
+}
+
+interface TimelineBucket {
+  hour: string;
+  rowCount: number;
+  mismatchCount: number;
+  gapCount: number;
+}
+
+export interface VerificationTimeline {
+  timestampColumn: string | null;
+  buckets: TimelineBucket[];
+  warnings: string[];
+  hoursEvaluated: number;
+}
 
 export class VerificationService {
   private monitoringPool: Pool;
 
   constructor() {
     this.monitoringPool = getDbPool();
+  }
+
+  private readonly NUMERIC_TYPES = new Set([
+    'bigint',
+    'integer',
+    'numeric',
+    'double precision',
+    'real',
+    'smallint',
+  ]);
+
+  private readonly TIMELINE_DISABLED_TABLES = new Set([
+    'account_balances',
+  ]);
+
+  private parsePkBigInt(value: string | null | undefined): bigint | null {
+    if (value == null) return null;
+    try {
+      return BigInt(value);
+    } catch {
+      return null;
+    }
+  }
+
+  private parseTableName(tableName: string): { schema: string; table: string } {
+    const trimmed = tableName.trim();
+    const stripQuotes = (value: string) => value.replace(/^"+|"+$/g, '');
+
+    if (trimmed.includes('.')) {
+      const [schemaPart, tablePart] = trimmed.split('.');
+      return {
+        schema: stripQuotes(schemaPart),
+        table: stripQuotes(tablePart),
+      };
+    }
+
+    return {
+      schema: 'public',
+      table: stripQuotes(trimmed),
+    };
+  }
+
+  private quoteIdentifier(identifier: string): string {
+    return `"${identifier.replace(/"/g, '""')}"`;
+  }
+
+  private isTimestampLikeColumn(columnName: string, dataType: string): boolean {
+    const lowerName = columnName.toLowerCase();
+    const lowerType = dataType.toLowerCase();
+
+    if (lowerType.includes('timestamp') || lowerType.includes('date')) {
+      return true;
+    }
+
+    if (this.NUMERIC_TYPES.has(lowerType)) {
+      if (
+        lowerName.includes('timestamp') ||
+        lowerName.includes('time') ||
+        lowerName.includes('block') ||
+        lowerName.includes('event')
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private determineTimestampStrategy(columnName: string, dataType: string): TimestampStrategy {
+    const lowerType = dataType.toLowerCase();
+    const lowerName = columnName.toLowerCase();
+
+    if (lowerType.includes('timestamp with time zone')) {
+      return 'timestamptz';
+    }
+
+    if (lowerType.includes('timestamp')) {
+      return 'timestamp';
+    }
+
+    if (this.NUMERIC_TYPES.has(lowerType)) {
+      if (lowerName.includes('millis') || lowerName.endsWith('_ms')) {
+        return 'epoch_millis';
+      }
+      return 'epoch_seconds';
+    }
+
+    return 'timestamp';
+  }
+
+  private scoreTimestampColumn(columnName: string, dataType: string): number {
+    const lowerName = columnName.toLowerCase();
+    const lowerType = dataType.toLowerCase();
+
+    const priorityRules: Array<{ regex: RegExp; weight: number }> = [
+      { regex: /^blocktimestamp$/, weight: 100 },
+      { regex: /^block_timestamp$/, weight: 95 },
+      { regex: /^blocktime$/, weight: 90 },
+      { regex: /block/, weight: 80 },
+      { regex: /event.*time/, weight: 70 },
+      { regex: /event.*seq/, weight: 60 },
+      { regex: /timestamp/, weight: 50 },
+      { regex: /created_at/, weight: 40 },
+      { regex: /updated_at/, weight: 20 },
+    ];
+
+    let score = 0;
+    for (const rule of priorityRules) {
+      if (rule.regex.test(lowerName)) {
+        score = Math.max(score, rule.weight);
+        break;
+      }
+    }
+
+    if (lowerType.includes('timestamp')) {
+      score += 30;
+    } else if (this.NUMERIC_TYPES.has(lowerType)) {
+      score += 10;
+    }
+
+    return score;
+  }
+
+  private buildTimestampExpression(info: TimestampColumnInfo, columnRef: string): string {
+    switch (info.strategy) {
+      case 'timestamptz':
+        return `${columnRef}::timestamptz`;
+      case 'timestamp':
+        return `${columnRef}::timestamp`;
+      case 'epoch_millis':
+        return `to_timestamp(${columnRef}::double precision / 1000.0)`;
+      case 'epoch_seconds':
+      default:
+        return `to_timestamp(${columnRef}::double precision)`;
+    }
+  }
+
+  private buildJsonTimestampExpression(info: TimestampColumnInfo, jsonAccessor: string): string {
+    const safeAccessor = `NULLIF(${jsonAccessor}, '')`;
+    switch (info.strategy) {
+      case 'timestamptz':
+      case 'timestamp':
+        return `(${safeAccessor})::timestamp`;
+      case 'epoch_millis':
+        return `to_timestamp((${safeAccessor})::double precision / 1000.0)`;
+      case 'epoch_seconds':
+      default:
+        return `to_timestamp((${safeAccessor})::double precision)`;
+    }
+  }
+
+  private async detectTimestampColumn(pool: Pool, schema: string, table: string): Promise<TimestampColumnInfo | null> {
+    const columnResult = await pool.query(
+      `
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2
+      `,
+      [schema, table]
+    );
+
+    const candidates: TimestampColumnInfo[] = [];
+
+    for (const row of columnResult.rows) {
+      const columnName: string = row.column_name;
+      const dataType: string = row.data_type;
+
+      if (!this.isTimestampLikeColumn(columnName, dataType)) {
+        continue;
+      }
+
+      const strategy = this.determineTimestampStrategy(columnName, dataType);
+      const score = this.scoreTimestampColumn(columnName, dataType);
+
+      candidates.push({
+        columnName,
+        dataType,
+        strategy,
+        score,
+      });
+    }
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0];
+  }
+
+  private buildTimeWindowClause(hours: number | null, columnAlias = 'ts'): string {
+    if (!hours) {
+      return '';
+    }
+    const clamped = Math.max(1, Math.min(hours, 24 * 30)); // limit to 30 days of hours
+    return `AND ${columnAlias} >= NOW() - INTERVAL '${clamped} hours'`;
   }
 
   /**
@@ -25,6 +246,14 @@ export class VerificationService {
       return pkColumns[0];
     }
     return `(${pkColumns.map(col => `${col}::text`).join(` || '::' || `)})`;
+  }
+
+  private buildPkTextExpression(pkColumns: string[]): string {
+    const expr = this.buildPkExpression(pkColumns);
+    if (pkColumns.length === 1) {
+      return `${expr}::text`;
+    }
+    return `(${expr})::text`;
   }
 
   /**
@@ -488,6 +717,85 @@ export class VerificationService {
     return result.rows;
   }
 
+  async getGapRanges(jobId: number, limit = 10000): Promise<VerificationGapRange[]> {
+    const result = await this.monitoringPool.query(
+      `SELECT id, primary_key_value, source_row, detected_at
+       FROM table_verification_gaps
+       WHERE job_id = $1
+       ORDER BY primary_key_value ASC
+       LIMIT $2`,
+      [jobId, limit]
+    );
+
+    if (result.rows.length === 0) {
+      return [];
+    }
+
+    const sorted = result.rows
+      .map((row: any) => ({
+        id: row.id,
+        pkValue: row.primary_key_value as string,
+        sourceRow: row.source_row as Record<string, any>,
+        detectedAt: row.detected_at as Date,
+        numericPk: this.parsePkBigInt(row.primary_key_value),
+      }))
+      .sort((a, b) => {
+        if (a.numericPk !== null && b.numericPk !== null) {
+          return a.numericPk < b.numericPk ? -1 : a.numericPk > b.numericPk ? 1 : 0;
+        }
+        return a.pkValue.localeCompare(b.pkValue);
+      });
+
+    const ranges: VerificationGapRange[] = [];
+
+    let current = {
+      startPk: sorted[0].pkValue,
+      endPk: sorted[0].pkValue,
+      numericEnd: sorted[0].numericPk,
+      count: 1,
+      detectedAt: sorted[0].detectedAt,
+      sampleSourceRow: sorted[0].sourceRow,
+    };
+
+    const pushCurrent = () => {
+      ranges.push({
+        startPk: current.startPk,
+        endPk: current.endPk,
+        count: current.count,
+        detectedAt: current.detectedAt,
+        sampleSourceRow: current.sampleSourceRow,
+      });
+    };
+
+    for (let i = 1; i < sorted.length; i++) {
+      const row = sorted[i];
+      const isSequential =
+        current.numericEnd !== null &&
+        row.numericPk !== null &&
+        row.numericPk === current.numericEnd + BigInt(1);
+
+      if (isSequential) {
+        current.endPk = row.pkValue;
+        current.numericEnd = row.numericPk;
+        current.count += 1;
+      } else {
+        pushCurrent();
+        current = {
+          startPk: row.pkValue,
+          endPk: row.pkValue,
+          numericEnd: row.numericPk,
+          count: 1,
+          detectedAt: row.detectedAt,
+          sampleSourceRow: row.sourceRow,
+        };
+      }
+    }
+
+    pushCurrent();
+
+    return ranges;
+  }
+
   /**
    * Get total count of mismatches for a job
    */
@@ -530,5 +838,223 @@ export class VerificationService {
       'DELETE FROM table_verification_jobs WHERE table_name = $1',
       [tableName]
     );
+  }
+
+  async recheckGaps(
+    jobId: number,
+    options: { limit?: number; chunkSize?: number } = {}
+  ): Promise<GapRecheckResult> {
+    const job = await this.getJobById(jobId);
+    if (!job) {
+      throw new Error('Verification job not found');
+    }
+
+    const targetUrl = process.env.TARGET_DATABASE_URL;
+    if (!targetUrl) {
+      throw new Error('TARGET_DATABASE_URL not configured');
+    }
+
+    const limit = options.limit ?? 5000;
+    const chunkSize = Math.max(50, Math.min(options.chunkSize ?? 500, 2000));
+
+    const gapsResult = await this.monitoringPool.query(
+      `SELECT id, primary_key_value 
+       FROM table_verification_gaps 
+       WHERE job_id = $1 
+       ORDER BY primary_key_value ASC 
+       LIMIT $2`,
+      [jobId, limit]
+    );
+
+    if (gapsResult.rows.length === 0) {
+      return { rechecked: 0, resolved: 0, remaining: 0 };
+    }
+
+    const { schema, table } = this.parseTableName(job.table_name);
+    const safeTableName = `${this.quoteIdentifier(schema)}.${this.quoteIdentifier(table)}`;
+    const pkTextExpr = this.buildPkTextExpression(job.primary_key_columns);
+
+    const targetPool = createSourceTargetPool(targetUrl);
+    let resolved = 0;
+    let rechecked = 0;
+
+    try {
+      for (let i = 0; i < gapsResult.rows.length; i += chunkSize) {
+        const chunk = gapsResult.rows.slice(i, i + chunkSize);
+        const pkValues = chunk.map((row: any) => row.primary_key_value);
+        rechecked += chunk.length;
+
+        const existing = await targetPool.query(
+          `SELECT ${pkTextExpr} AS pk_value 
+           FROM ${safeTableName} 
+           WHERE ${pkTextExpr} = ANY($1::text[])`,
+          [pkValues]
+        );
+
+        const foundSet = new Set(existing.rows.map((row: any) => row.pk_value));
+        const idsToDelete = chunk
+          .filter((row: any) => foundSet.has(row.primary_key_value))
+          .map((row: any) => row.id);
+
+        if (idsToDelete.length > 0) {
+          await this.monitoringPool.query(
+            `DELETE FROM table_verification_gaps 
+             WHERE id = ANY($1::int[])`,
+            [idsToDelete]
+          );
+          resolved += idsToDelete.length;
+        }
+      }
+    } finally {
+      await targetPool.end();
+    }
+
+    const remaining = await this.getGapCount(jobId);
+    return { rechecked, resolved, remaining };
+  }
+
+  /**
+   * Build an hourly histogram of source rows along with mismatch/gap overlays.
+   * Returns empty buckets when no timestamp column can be detected.
+   */
+  async getTimelineData(tableName: string, jobId: number, hours?: number): Promise<VerificationTimeline> {
+    const hoursWindow = hours && Number.isFinite(hours) ? Number(hours) : 168;
+    const warnings: string[] = [];
+    const bucketMap = new Map<string, TimelineBucket>();
+
+    const sourceUrl = process.env.SOURCE_DATABASE_URL;
+    if (!sourceUrl) {
+      warnings.push('SOURCE_DATABASE_URL is not configured');
+      return { timestampColumn: null, buckets: [], warnings, hoursEvaluated: hoursWindow };
+    }
+
+    const { schema, table } = this.parseTableName(tableName);
+
+    if (this.TIMELINE_DISABLED_TABLES.has(table.toLowerCase())) {
+      warnings.push(`Timeline disabled for ${table}. This table does not store per-row timestamps.`);
+      return { timestampColumn: null, buckets: [], warnings, hoursEvaluated: hoursWindow };
+    }
+
+    const safeSchema = this.quoteIdentifier(schema);
+    const safeTable = this.quoteIdentifier(table);
+    const fullTableRef = `${safeSchema}.${safeTable}`;
+    const tableAlias = 'src';
+
+    const sourcePool = createSourceTargetPool(sourceUrl);
+    try {
+      const timestampColumn = await this.detectTimestampColumn(sourcePool, schema, table);
+
+      if (!timestampColumn) {
+        warnings.push('No timestamp-like column detected. Run analyze-table-timestamps.sh to inspect columns.');
+        return { timestampColumn: null, buckets: [], warnings, hoursEvaluated: hoursWindow };
+      }
+
+      const columnRef = `${tableAlias}.${this.quoteIdentifier(timestampColumn.columnName)}`;
+      const timestampExpr = this.buildTimestampExpression(timestampColumn, columnRef);
+      const timeWindowClause = this.buildTimeWindowClause(hoursWindow, 'ts');
+
+      const sourceQuery = `
+        WITH extracted AS (
+          SELECT ${timestampExpr} AS ts
+          FROM ${fullTableRef} ${tableAlias}
+          WHERE ${timestampExpr} IS NOT NULL
+        )
+        SELECT date_trunc('hour', ts) AS hour_bucket, COUNT(*) AS row_count
+        FROM extracted
+        WHERE ts IS NOT NULL
+        ${timeWindowClause}
+        GROUP BY hour_bucket
+        ORDER BY hour_bucket
+      `;
+
+      const mismatchTimestampExpr = this.buildJsonTimestampExpression(
+        timestampColumn,
+        `table_verification_mismatches.source_row ->> '${timestampColumn.columnName}'`
+      );
+      const gapTimestampExpr = this.buildJsonTimestampExpression(
+        timestampColumn,
+        `table_verification_gaps.source_row ->> '${timestampColumn.columnName}'`
+      );
+
+      const mismatchQuery = `
+        WITH extracted AS (
+          SELECT ${mismatchTimestampExpr} AS ts
+          FROM table_verification_mismatches
+          WHERE job_id = $1
+        )
+        SELECT date_trunc('hour', ts) AS hour_bucket, COUNT(*) AS mismatch_count
+        FROM extracted
+        WHERE ts IS NOT NULL
+        ${timeWindowClause}
+        GROUP BY hour_bucket
+        ORDER BY hour_bucket
+      `;
+
+      const gapQuery = `
+        WITH extracted AS (
+          SELECT ${gapTimestampExpr} AS ts
+          FROM table_verification_gaps
+          WHERE job_id = $1
+        )
+        SELECT date_trunc('hour', ts) AS hour_bucket, COUNT(*) AS gap_count
+        FROM extracted
+        WHERE ts IS NOT NULL
+        ${timeWindowClause}
+        GROUP BY hour_bucket
+        ORDER BY hour_bucket
+      `;
+
+      const [sourceBuckets, mismatchBuckets, gapBuckets] = await Promise.all([
+        sourcePool.query(sourceQuery),
+        this.monitoringPool.query(mismatchQuery, [jobId]),
+        this.monitoringPool.query(gapQuery, [jobId]),
+      ]);
+
+      const ensureBucket = (isoHour: string) => {
+        if (!bucketMap.has(isoHour)) {
+          bucketMap.set(isoHour, {
+            hour: isoHour,
+            rowCount: 0,
+            mismatchCount: 0,
+            gapCount: 0,
+          });
+        }
+        return bucketMap.get(isoHour)!;
+      };
+
+      for (const row of sourceBuckets.rows) {
+        const iso = new Date(row.hour_bucket).toISOString();
+        const bucket = ensureBucket(iso);
+        bucket.rowCount = Number(row.row_count);
+      }
+
+      for (const row of mismatchBuckets.rows) {
+        const iso = new Date(row.hour_bucket).toISOString();
+        const bucket = ensureBucket(iso);
+        bucket.mismatchCount = Number(row.mismatch_count);
+      }
+
+      for (const row of gapBuckets.rows) {
+        const iso = new Date(row.hour_bucket).toISOString();
+        const bucket = ensureBucket(iso);
+        bucket.gapCount = Number(row.gap_count);
+      }
+
+      const buckets = Array.from(bucketMap.values()).sort(
+        (a, b) => new Date(a.hour).getTime() - new Date(b.hour).getTime()
+      );
+
+      return {
+        timestampColumn: timestampColumn.columnName,
+        buckets,
+        warnings,
+        hoursEvaluated: Math.max(1, Math.min(hoursWindow, 24 * 30)),
+      };
+    } catch (error) {
+      warnings.push('Failed to build timeline: ' + (error as Error).message);
+      return { timestampColumn: null, buckets: [], warnings, hoursEvaluated: hoursWindow };
+    } finally {
+      await sourcePool.end();
+    }
   }
 }

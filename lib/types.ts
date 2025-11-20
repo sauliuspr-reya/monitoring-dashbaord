@@ -89,16 +89,39 @@ export interface ReplicationStatus {
   subscriptionEnabled: boolean;
   workerRunning: boolean;
   workerPid?: number;
+  workerState?: string;
+  workerSyncState?: string;
+  workerReceivedLsn?: string;
+  workerLatestEndLsn?: string;
+  workerLastMsgSendTime?: Date;
+  workerLastMsgReceiptTime?: Date;
+  workerWriteLag?: string;
+  workerFlushLag?: string;
+  workerReplayLag?: string;
   lagBytes: number;
   lagSeconds: number;
   slotLagBytes: number;
+  slotName?: string;
+  slotActive?: boolean;
+  slotRestartLsn?: string;
+  slotConfirmedFlushLsn?: string;
+  slotWalStatus?: string;
   status: 'active' | 'stopped' | 'error';
   lastAppliedAt?: Date;
   lastAppliedLsn?: string;
+  replicationState?: string;
+  replicationSyncState?: string;
+  replicationClientAddr?: string;
+  replicationSentLsn?: string;
+  replicationWriteLsn?: string;
+  replicationFlushLsn?: string;
+  replicationReplayLsn?: string;
   tableCount: number;
   tablesWithIssues: number;
   conflicts: number;
   dataCopy?: boolean; // Whether copy_data=true was set during subscription creation
+  publicationName?: string;
+  subscriptionDbName?: string;
 }
 
 // Legacy aliases for backward compatibility

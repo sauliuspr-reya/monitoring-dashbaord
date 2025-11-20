@@ -27,15 +27,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Get mismatches and gaps (paginated separately)
     const limit = parseInt(req.query.limit as string) || 100;
-    const gapLimit = parseInt(req.query.gapLimit as string) || 10000; // High limit for gaps (collapsed view)
+    const requestedGapLimit = parseInt(req.query.gapLimit as string) || 10000;
+    const GAP_LIMIT_MAX = 2000;
+    const gapLimit = Math.min(Math.max(requestedGapLimit, 0), GAP_LIMIT_MAX);
     const mismatchOffset = parseInt(req.query.mismatchOffset as string) || 0;
     const gapOffset = parseInt(req.query.gapOffset as string) || 0;
 
-    const [mismatches, gaps, mismatchCount, gapCount] = await Promise.all([
+    const timelineHours = req.query.timelineHours ? parseInt(req.query.timelineHours as string, 10) : undefined;
+
+    const [mismatches, gaps, gapRanges, mismatchCount, gapCount, timeline] = await Promise.all([
       service.getMismatches(job.id, limit, mismatchOffset),
       service.getGaps(job.id, gapLimit, gapOffset),
+      service.getGapRanges(job.id, gapLimit),
       service.getMismatchCount(job.id),
       service.getGapCount(job.id),
+      service.getTimelineData(tableName, job.id, timelineHours),
     ]);
 
     return res.status(200).json({
@@ -69,12 +75,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         sourceRow: g.source_row,
         detectedAt: g.detected_at,
       })),
+      timeline,
+      gapRanges: gapRanges.map((range, index) => ({
+        id: index,
+        startPk: range.startPk,
+        endPk: range.endPk,
+        count: range.count,
+        detectedAt: range.detectedAt,
+        sampleSourceRow: range.sampleSourceRow,
+      })),
       pagination: {
         limit,
         mismatchOffset,
         gapOffset,
         totalMismatches: mismatchCount,
         totalGaps: gapCount,
+        gapLimitApplied: gapLimit,
+        gapLimitRequested: requestedGapLimit,
+        gapLimitTruncated: requestedGapLimit > gapLimit,
       },
     });
   } catch (error: any) {

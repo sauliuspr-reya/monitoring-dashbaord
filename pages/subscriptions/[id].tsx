@@ -69,6 +69,16 @@ export default function SubscriptionDetails() {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
+  const formatLsn = (lsn?: string) => {
+    if (!lsn) return '—';
+    return lsn;
+  };
+
+  const formatDateTime = (value?: string | Date) => {
+    if (!value) return '—';
+    return new Date(value).toLocaleString();
+  };
+
   const handleToggle = async (enabled: boolean) => {
     if (!id) return;
     
@@ -226,7 +236,7 @@ export default function SubscriptionDetails() {
               </div>
 
               {/* Metadata */}
-              <div className="flex items-center gap-4 mt-4 text-xs text-gray-500">
+              <div className="flex items-center gap-4 mt-4 text-xs text-gray-500 flex-wrap">
                 {subscription.lastAppliedAt && (
                   <span>Last applied: {new Date(subscription.lastAppliedAt).toLocaleString()}</span>
                 )}
@@ -235,7 +245,115 @@ export default function SubscriptionDetails() {
                     data_copy = {subscription.dataCopy ? 'true' : 'false'}
                   </span>
                 )}
+                {subscription.publicationName && (
+                  <span>Publication: <span className="font-mono">{subscription.publicationName}</span></span>
+                )}
+                {subscription.subscriptionDbName && (
+                  <span>Subscription: <span className="font-mono">{subscription.subscriptionDbName}</span></span>
+                )}
+                {subscription.slotName && (
+                  <span>
+                    Slot: <span className="font-mono">{subscription.slotName}</span>
+                    {subscription.slotActive !== undefined && (
+                      <span className={`ml-1 ${subscription.slotActive ? 'text-green-600' : 'text-red-600'}`}>
+                        ({subscription.slotActive ? 'active' : 'inactive'})
+                      </span>
+                    )}
+                  </span>
+                )}
               </div>
+
+              {(subscription.slotRestartLsn || subscription.workerPid || subscription.replicationState) && (
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {(subscription.slotRestartLsn || subscription.slotConfirmedFlushLsn) && (
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-3">Replication Slot</h3>
+                      <dl className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Restart LSN</dt>
+                          <dd className="font-mono text-gray-900">{formatLsn(subscription.slotRestartLsn)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Confirmed Flush LSN</dt>
+                          <dd className="font-mono text-gray-900">{formatLsn(subscription.slotConfirmedFlushLsn)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">WAL Status</dt>
+                          <dd className="text-gray-900">{subscription.slotWalStatus || '—'}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  )}
+
+                  {(subscription.workerPid || subscription.workerState) && (
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <h3 className="text-sm font-semibold text-gray-800 mb-3">Apply Worker</h3>
+                      <dl className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">PID</dt>
+                          <dd className="text-gray-900">{subscription.workerPid ?? '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">State</dt>
+                          <dd className="text-gray-900">{subscription.workerState || '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Sync State</dt>
+                          <dd className="text-gray-900">{subscription.workerSyncState || '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Received LSN</dt>
+                          <dd className="font-mono text-gray-900">{formatLsn(subscription.workerReceivedLsn)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Latest End LSN</dt>
+                          <dd className="font-mono text-gray-900">{formatLsn(subscription.workerLatestEndLsn)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Last Msg Send</dt>
+                          <dd className="text-gray-900">{formatDateTime(subscription.workerLastMsgSendTime)}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt className="text-gray-500">Last Msg Receipt</dt>
+                          <dd className="text-gray-900">{formatDateTime(subscription.workerLastMsgReceiptTime)}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {subscription.replicationState && (
+                <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">Source Streaming Connection</h3>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <dt className="text-gray-500">State</dt>
+                      <dd className="text-gray-900">{subscription.replicationState}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Sync State</dt>
+                      <dd className="text-gray-900">{subscription.replicationSyncState || '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Sent LSN</dt>
+                      <dd className="font-mono text-gray-900">{formatLsn(subscription.replicationSentLsn)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Flush LSN</dt>
+                      <dd className="font-mono text-gray-900">{formatLsn(subscription.replicationFlushLsn)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Replay LSN</dt>
+                      <dd className="font-mono text-gray-900">{formatLsn(subscription.replicationReplayLsn)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Client Addr</dt>
+                      <dd className="text-gray-900">{subscription.replicationClientAddr || '—'}</dd>
+                    </div>
+                  </dl>
+                </div>
+              )}
             </div>
 
             {/* Action Buttons - Only Essential */}

@@ -39,6 +39,20 @@ export interface VerificationGap {
   detected_at: Date;
 }
 
+export interface VerificationGapRange {
+  startPk: string;
+  endPk: string;
+  count: number;
+  detectedAt: Date;
+  sampleSourceRow: Record<string, any>;
+}
+
+export interface GapRecheckResult {
+  rechecked: number;
+  resolved: number;
+  remaining: number;
+}
+
 export interface BatchResult {
   completed: boolean;
   stoppedByUser?: boolean;

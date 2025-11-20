@@ -27,8 +27,11 @@ export class MonitoringService {
         SELECT 
           s.subenabled as enabled,
           ss.pid as worker_pid,
+          ss.received_lsn,
           ss.latest_end_lsn,
-          ss.latest_end_time
+          ss.latest_end_time,
+          ss.last_msg_send_time,
+          ss.last_msg_receipt_time
         FROM pg_subscription s
         LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
         WHERE s.subname = $1
@@ -38,7 +41,18 @@ export class MonitoringService {
         const sub = subResult.rows[0];
         status.subscriptionEnabled = sub.enabled;
         status.workerRunning = sub.worker_pid !== null;
+        status.workerPid = sub.worker_pid || undefined;
+        status.workerState = sub.worker_pid ? 'running' : undefined;
+        status.workerSyncState = undefined;
+        status.workerReceivedLsn = sub.received_lsn || undefined;
+        status.workerLatestEndLsn = sub.latest_end_lsn || undefined;
+        status.workerLastMsgSendTime = sub.last_msg_send_time || undefined;
+        status.workerLastMsgReceiptTime = sub.last_msg_receipt_time || undefined;
+        status.workerWriteLag = undefined;
+        status.workerFlushLag = undefined;
+        status.workerReplayLag = undefined;
         status.lastAppliedAt = sub.latest_end_time;
+        status.lastAppliedLsn = sub.latest_end_lsn || undefined;
       }
 
       // Check replication slot lag on source (with retry)
@@ -47,7 +61,8 @@ export class MonitoringService {
           active,
           pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as slot_lag_bytes,
           restart_lsn,
-          confirmed_flush_lsn
+          confirmed_flush_lsn,
+          wal_status
         FROM pg_replication_slots
         WHERE slot_name = $1
       `, [slotName]));
@@ -55,15 +70,26 @@ export class MonitoringService {
       if (slotResult.rows.length > 0) {
         const slot = slotResult.rows[0];
         status.slotLagBytes = parseInt(slot.slot_lag_bytes || '0', 10);
+        status.slotActive = slot.active;
+        status.slotRestartLsn = slot.restart_lsn;
+        status.slotConfirmedFlushLsn = slot.confirmed_flush_lsn;
+        status.slotName = slotName;
+        status.slotWalStatus = slot.wal_status;
       }
 
       // Check replication connection lag on source (with retry)
       const replResult = await retryQuery(() => sourcePool.query(`
         SELECT 
+          application_name,
+          client_addr,
           state,
           sync_state,
+          sent_lsn,
+          write_lsn,
+          flush_lsn,
+          replay_lsn,
           pg_wal_lsn_diff(pg_current_wal_lsn(), flush_lsn) as lag_bytes,
-          EXTRACT(EPOCH FROM (now() - write_lag))::int as lag_seconds
+          EXTRACT(EPOCH FROM now() - COALESCE(write_lag, interval '0'))::int as lag_seconds
         FROM pg_stat_replication
         WHERE application_name = $1
       `, [subscriptionName]));
@@ -73,6 +99,13 @@ export class MonitoringService {
         status.lagBytes = parseInt(repl.lag_bytes || '0', 10);
         status.lagSeconds = repl.lag_seconds || 0;
         status.status = repl.state === 'streaming' ? 'active' : 'stopped';
+        status.replicationState = repl.state;
+        status.replicationSyncState = repl.sync_state;
+        status.replicationClientAddr = repl.client_addr;
+        status.replicationSentLsn = repl.sent_lsn;
+        status.replicationWriteLsn = repl.write_lsn;
+        status.replicationFlushLsn = repl.flush_lsn;
+        status.replicationReplayLsn = repl.replay_lsn;
       } else if (status.subscriptionEnabled && !status.workerRunning) {
         status.status = 'error';
       }

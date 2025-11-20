@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import Navbar from '../../components/Navbar';
 import { ArrowLeft, AlertCircle, CheckCircle, Clock, XCircle, Square, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell } from 'recharts';
+import { format } from 'date-fns';
 
 interface VerificationDetails {
   job: {
@@ -35,13 +37,38 @@ interface VerificationDetails {
     sourceRow: Record<string, any>;
     detectedAt: string;
   }>;
+  gapRanges: Array<{
+    id: number;
+    startPk: string;
+    endPk: string;
+    count: number;
+    detectedAt: string;
+    sampleSourceRow: Record<string, any>;
+  }>;
   pagination: {
     limit: number;
-    offset: number;
+    mismatchOffset: number;
+    gapOffset: number;
     totalMismatches: number;
     totalGaps: number;
+    gapLimitApplied?: number;
+    gapLimitRequested?: number;
+    gapLimitTruncated?: boolean;
   };
+  timeline: {
+    timestampColumn: string | null;
+    buckets: Array<{
+      hour: string;
+      rowCount: number;
+      mismatchCount: number;
+      gapCount: number;
+    }>;
+    warnings: string[];
+    hoursEvaluated: number;
+  } | null;
 }
+
+type GapRecord = VerificationDetails['gaps'][number];
 
 export default function VerificationDetail() {
   const router = useRouter();
@@ -51,6 +78,10 @@ export default function VerificationDetail() {
   const [error, setError] = useState<string | null>(null);
   const [mismatchPage, setMismatchPage] = useState(0);
   const [expandedGapRanges, setExpandedGapRanges] = useState<Set<number>>(new Set());
+  const [timelineHours, setTimelineHours] = useState(168);
+  const [recheckingGaps, setRecheckingGaps] = useState(false);
+  const [gapActionMessage, setGapActionMessage] = useState<string | null>(null);
+  const [gapActionError, setGapActionError] = useState<string | null>(null);
   const ITEMS_PER_PAGE = 100;
 
   useEffect(() => {
@@ -60,14 +91,19 @@ export default function VerificationDetail() {
       return () => clearInterval(interval);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableName, mismatchPage]);
+  }, [tableName, mismatchPage, timelineHours]);
 
   const fetchDetails = async () => {
     try {
       const mismatchOffset = mismatchPage * ITEMS_PER_PAGE;
-      const response = await fetch(
-        `/api/verification/${tableName}?mismatchOffset=${mismatchOffset}&gapOffset=0&limit=${ITEMS_PER_PAGE}&gapLimit=10000`
-      );
+      const params = new URLSearchParams({
+        mismatchOffset: mismatchOffset.toString(),
+        gapOffset: '0',
+        limit: ITEMS_PER_PAGE.toString(),
+        gapLimit: '10000',
+        timelineHours: timelineHours.toString(),
+      });
+      const response = await fetch(`/api/verification/${tableName}?${params.toString()}`);
       if (!response.ok) {
         throw new Error('Failed to fetch verification details');
       }
@@ -81,6 +117,32 @@ export default function VerificationDetail() {
     }
   };
 
+  const handleRecheckGaps = async () => {
+    if (!tableName) return;
+    setRecheckingGaps(true);
+    setGapActionError(null);
+    try {
+      const response = await fetch(`/api/verification/${tableName}/recheck-gaps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 10000 }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.error || 'Failed to re-check gaps');
+      }
+      const result = await response.json();
+      setGapActionMessage(
+        `Rechecked ${result.rechecked.toLocaleString()} gap(s), resolved ${result.resolved.toLocaleString()}`
+      );
+      await fetchDetails();
+    } catch (err: any) {
+      setGapActionError(err.message || 'Failed to re-check gaps');
+    } finally {
+      setRecheckingGaps(false);
+    }
+  };
+
   const formatNumber = (num: string | number) => {
     return parseInt(num.toString()).toLocaleString();
   };
@@ -88,6 +150,149 @@ export default function VerificationDetail() {
   const formatDate = (date: string) => {
     return new Date(date).toLocaleString();
   };
+
+  const formatHourLabel = (iso: string) => {
+    return format(new Date(iso), 'MMM d HH:mm');
+  };
+
+  const toDateFromEpoch = (value: any): Date | null => {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const num = typeof value === 'string' ? Number(value) : Number(value);
+    if (!Number.isFinite(num)) {
+      return null;
+    }
+    // Assume values larger than unix millis threshold are already in ms
+    if (Math.abs(num) > 1e12) {
+      return new Date(num);
+    }
+    return new Date(num * 1000);
+  };
+
+  const extractGapTimestamp = (gap: { sourceRow: Record<string, any>; detectedAt: string }): Date => {
+    const row = gap.sourceRow || {};
+    const candidateKeys = [
+      'block_timestamp',
+      'blockTimestamp',
+      'timestamp',
+      'event_timestamp',
+      'created_at',
+      'createdAt',
+    ];
+
+    for (const key of candidateKeys) {
+      if (row[key] !== undefined) {
+        if (typeof row[key] === 'string' || typeof row[key] === 'number') {
+          const maybeDate = toDateFromEpoch(row[key]);
+          if (maybeDate) {
+            return maybeDate;
+          }
+        } else {
+          const date = new Date(row[key]);
+          if (!isNaN(date.getTime())) {
+            return date;
+          }
+        }
+      }
+    }
+
+    return new Date(gap.detectedAt);
+  };
+
+  const TimelineTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload || payload.length === 0) {
+      return null;
+    }
+    const bucket = payload[0].payload;
+    return (
+      <div className="bg-white border border-gray-200 rounded-md shadow text-sm p-3">
+        <div className="font-semibold text-gray-900">{formatHourLabel(label as string)}</div>
+        <div className="mt-1 text-gray-700">
+          Rows: <span className="font-medium">{bucket.rowCount.toLocaleString()}</span>
+        </div>
+        <div className="text-yellow-700">
+          Gaps: <span className="font-medium">{bucket.gapCount}</span>
+        </div>
+        <div className="text-red-700">
+          Mismatches: <span className="font-medium">{bucket.mismatchCount}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const gapHistogramData = useMemo(() => {
+    if (!details) return null;
+    if ((details.pagination?.totalGaps || 0) > 10000) {
+      return null;
+    }
+    if (!details.gaps || details.gaps.length === 0) {
+      return null;
+    }
+
+    const buckets = new Map<string, { count: number; date: Date }>();
+
+    for (const gap of details.gaps) {
+      const date = extractGapTimestamp(gap);
+      if (!date || isNaN(date.getTime())) continue;
+      const bucketDate = new Date(date);
+      bucketDate.setMinutes(0, 0, 0);
+      const iso = bucketDate.toISOString();
+      const existing = buckets.get(iso);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        buckets.set(iso, { count: 1, date: bucketDate });
+      }
+    }
+
+    return Array.from(buckets.entries())
+      .map(([iso, info]) => ({
+        iso,
+        hourLabel: format(info.date, 'MMM d HH:00'),
+        count: info.count,
+      }))
+      .sort((a, b) => new Date(a.iso).getTime() - new Date(b.iso).getTime());
+  }, [details]);
+
+  const normalizedGapRanges = useMemo(() => {
+    if (!details) return [];
+    if (details.gapRanges && details.gapRanges.length > 0) {
+      return details.gapRanges.map(range => ({
+        id: range.id,
+        startPk: range.startPk,
+        endPk: range.endPk,
+        count: range.count,
+        detectedAt: range.detectedAt,
+        sampleRow: range.sampleSourceRow,
+        gaps: [] as GapRecord[],
+      }));
+    }
+    if (!details.gaps) return [];
+    return groupGapsIntoRanges(details.gaps).map(range => ({
+      id: range.id,
+      startPk: range.startPk,
+      endPk: range.endPk,
+      count: range.count,
+      detectedAt: range.detectedAt,
+      sampleRow: range.gaps[0]?.sourceRow ?? {},
+      gaps: range.gaps,
+    }));
+  }, [details]);
+
+  const totalGapRows =
+    details?.pagination?.totalGaps ??
+    normalizedGapRanges.reduce((sum, range) => sum + range.count, 0);
+  const largestGapRange = normalizedGapRanges.reduce(
+    (max, range) => Math.max(max, range.count),
+    0
+  );
+
+  const timelineRangeOptions = [
+    { label: 'Last 24h', value: 24 },
+    { label: 'Last 72h', value: 72 },
+    { label: 'Last 7d', value: 168 },
+  ];
 
   const getStatusIcon = (status: string) => {
     switch (status) {
@@ -131,9 +336,17 @@ export default function VerificationDetail() {
   const groupGapsIntoRanges = (gaps: Array<{ id: number; primaryKeyValue: string; sourceRow: Record<string, any>; detectedAt: string }>) => {
     if (gaps.length === 0) return [];
     
-    const sortedGaps = [...gaps].sort((a, b) => 
-      parseInt(a.primaryKeyValue) - parseInt(b.primaryKeyValue)
-    );
+    const sortedGaps = [...gaps].sort((a, b) => {
+      try {
+        const aPk = BigInt(a.primaryKeyValue);
+        const bPk = BigInt(b.primaryKeyValue);
+        if (aPk < bPk) return -1;
+        if (aPk > bPk) return 1;
+        return 0;
+      } catch {
+        return a.primaryKeyValue.localeCompare(b.primaryKeyValue);
+      }
+    });
     
     const ranges: Array<{
       id: number;
@@ -154,11 +367,17 @@ export default function VerificationDetail() {
     };
     
     for (let i = 1; i < sortedGaps.length; i++) {
-      const prevPk = parseInt(sortedGaps[i - 1].primaryKeyValue);
-      const currPk = parseInt(sortedGaps[i].primaryKeyValue);
+      let isSequential = false;
+      try {
+        const prevPk = BigInt(sortedGaps[i - 1].primaryKeyValue);
+        const currPk = BigInt(sortedGaps[i].primaryKeyValue);
+        isSequential = currPk === prevPk + BigInt(1);
+      } catch {
+        isSequential = false;
+      }
       
       // If consecutive (difference of 1), add to current range
-      if (currPk === prevPk + 1) {
+      if (isSequential) {
         currentRange.endPk = sortedGaps[i].primaryKeyValue;
         currentRange.count++;
         currentRange.gaps.push(sortedGaps[i]);
@@ -269,7 +488,7 @@ export default function VerificationDetail() {
     );
   }
 
-  const { job, mismatches, gaps, pagination } = details;
+  const { job, mismatches, gaps, pagination, timeline } = details;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -363,6 +582,109 @@ export default function VerificationDetail() {
           )}
         </div>
 
+        {timeline && (
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Hourly Timeline</h2>
+                <p className="text-sm text-gray-600">
+                  {timeline.timestampColumn
+                    ? <>Bucketed by <code className="px-1 bg-gray-100 rounded">{timeline.timestampColumn}</code> ({timeline.hoursEvaluated}h window)</>
+                    : 'No timestamp column detected'}
+                </p>
+              </div>
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-600">Range:</label>
+                <select
+                  value={timelineHours}
+                  onChange={(e) => setTimelineHours(parseInt(e.target.value))}
+                  className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {timelineRangeOptions.map(option => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {timeline.timestampColumn ? (
+              timeline.buckets.length > 0 ? (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">Total Rows</p>
+                      <p className="text-2xl font-semibold text-gray-900">
+                        {timeline.buckets.reduce((sum, bucket) => sum + bucket.rowCount, 0).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">Hours with Gaps</p>
+                      <p className="text-2xl font-semibold text-yellow-600">
+                        {timeline.buckets.filter(bucket => bucket.gapCount > 0).length}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-sm text-gray-600">Hours with Mismatches</p>
+                      <p className="text-2xl font-semibold text-red-600">
+                        {timeline.buckets.filter(bucket => bucket.mismatchCount > 0).length}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={timeline.buckets} margin={{ top: 10, right: 20, bottom: 5, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="hour"
+                          tickFormatter={(value) => format(new Date(value), 'MM/dd HH:mm')}
+                          minTickGap={16}
+                        />
+                        <YAxis />
+                        <Tooltip content={<TimelineTooltip />} />
+                        <Bar dataKey="rowCount" name="Rows / hour" radius={[4, 4, 0, 0]}>
+                          {timeline.buckets.map((bucket, index) => {
+                            let fill = '#2563eb';
+                            if (bucket.mismatchCount > 0) {
+                              fill = '#dc2626';
+                            } else if (bucket.gapCount > 0) {
+                              fill = '#f59e0b';
+                            }
+                            return <Cell key={`cell-${bucket.hour}-${index}`} fill={fill} />;
+                          })}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </>
+              ) : (
+                <div className="p-6 text-center text-gray-600 border border-dashed border-gray-200 rounded-lg">
+                  No rows found in the selected time range.
+                </div>
+              )
+            ) : (
+              <div className="p-6 bg-yellow-50 border border-yellow-200 rounded">
+                <p className="text-sm text-yellow-800">
+                  Unable to detect a timestamp column automatically. Run <code>scripts/analyze-table-timestamps.sh</code> to identify candidates.
+                </p>
+              </div>
+            )}
+
+            {timeline.warnings.length > 0 && (
+              <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded">
+                <p className="text-sm font-medium text-yellow-800 mb-2">Warnings</p>
+                <ul className="list-disc list-inside text-sm text-yellow-900 space-y-1">
+                  {timeline.warnings.map((warning, idx) => (
+                    <li key={idx}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Mismatches Section */}
         {mismatches.length > 0 && (
           <div className="bg-white rounded-lg shadow p-6 mb-6">
@@ -408,97 +730,143 @@ export default function VerificationDetail() {
         {/* Gaps Section - Range View */}
         {gaps.length > 0 && (
           <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-              <AlertCircle className="w-5 h-5 text-yellow-500 mr-2" />
-              Gaps ({pagination.totalGaps})
-            </h2>
-            
-            {(() => {
-              const gapRanges = groupGapsIntoRanges(gaps);
-              return (
-                <>
-                  {/* Summary Stats */}
-                  <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-                      <div>
-                        <span className="font-medium text-gray-700">Total Missing:</span>
-                        <span className="ml-2 text-gray-900">{pagination.totalGaps} rows</span>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center">
+                <AlertCircle className="w-5 h-5 text-yellow-500 mr-2" />
+                Gaps ({pagination.totalGaps})
+              </h2>
+              <button
+                onClick={handleRecheckGaps}
+                disabled={recheckingGaps}
+                className="inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-50 hover:bg-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {recheckingGaps ? 'Re-checking…' : 'Re-check gaps'}
+              </button>
+            </div>
+            {gapActionMessage && (
+              <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded p-3">
+                {gapActionMessage}
+              </div>
+            )}
+            {gapActionError && (
+              <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
+                {gapActionError}
+              </div>
+            )}
+
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <span className="font-medium text-gray-700">Total Missing:</span>
+                  <span className="ml-2 text-gray-900">{totalGapRows} rows</span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-700">Gap Ranges:</span>
+                  <span className="ml-2 text-gray-900">{normalizedGapRanges.length}</span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-700">Largest Range:</span>
+                  <span className="ml-2 text-gray-900">
+                    {largestGapRange.toLocaleString()} rows
+                  </span>
+                </div>
+              </div>
+              {pagination.gapLimitTruncated && (
+                <p className="mt-3 text-xs text-yellow-800">
+                  Showing first {pagination.gapLimitApplied?.toLocaleString() || gapHistogramData?.length || '2k'} gaps (requested {pagination.gapLimitRequested?.toLocaleString() || '—'}).
+                  Download raw data from the monitoring DB if you need the complete set.
+                </p>
+              )}
+            </div>
+
+            {gapHistogramData && (
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-gray-800 mb-2">Gap Event Histogram (hourly)</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={gapHistogramData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="hourLabel"
+                        angle={-45}
+                        textAnchor="end"
+                        height={60}
+                        interval={Math.ceil(gapHistogramData.length / 12)}
+                      />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip />
+                      <Bar dataKey="count" fill="#fbbf24" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Showing individual events because total gaps ≤ 10,000. Larger tables fall back to aggregated hourly buckets.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {normalizedGapRanges.map(range => (
+                <div key={range.id} className="border border-yellow-200 rounded-lg bg-yellow-50">
+                  <div 
+                    className="p-4 cursor-pointer hover:bg-yellow-100 transition-colors"
+                    onClick={() => toggleGapRange(range.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4">
+                        {expandedGapRanges.has(range.id) ? (
+                          <ChevronDown className="w-5 h-5 text-yellow-600" />
+                        ) : (
+                          <ChevronUp className="w-5 h-5 text-yellow-600" />
+                        )}
+                        <div>
+                          <span className="font-semibold text-gray-900">
+                            {range.count === 1 ? (
+                              `PK: ${range.startPk}`
+                            ) : (
+                              `PK Range: ${range.startPk} → ${range.endPk}`
+                            )}
+                          </span>
+                          <span className="ml-3 text-sm text-gray-600">
+                            ({range.count} {range.count === 1 ? 'row' : 'rows'} missing)
+                          </span>
+                        </div>
                       </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Gap Ranges:</span>
-                        <span className="ml-2 text-gray-900">{gapRanges.length}</span>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Largest Range:</span>
-                        <span className="ml-2 text-gray-900">
-                          {Math.max(...gapRanges.map(r => r.count))} rows
-                        </span>
+                      <div className="text-sm text-gray-600">
+                        {formatDate(range.detectedAt)}
                       </div>
                     </div>
                   </div>
 
-                  {/* Gap Ranges */}
-                  <div className="space-y-3">
-                    {gapRanges.map(range => (
-                      <div key={range.id} className="border border-yellow-200 rounded-lg bg-yellow-50">
-                        {/* Range Header - Always Visible */}
-                        <div 
-                          className="p-4 cursor-pointer hover:bg-yellow-100 transition-colors"
-                          onClick={() => toggleGapRange(range.id)}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center space-x-4">
-                              {expandedGapRanges.has(range.id) ? (
-                                <ChevronDown className="w-5 h-5 text-yellow-600" />
-                              ) : (
-                                <ChevronUp className="w-5 h-5 text-yellow-600" />
-                              )}
-                              <div>
-                                <span className="font-semibold text-gray-900">
-                                  {range.count === 1 ? (
-                                    `PK: ${range.startPk}`
-                                  ) : (
-                                    `PK Range: ${range.startPk} → ${range.endPk}`
-                                  )}
-                                </span>
-                                <span className="ml-3 text-sm text-gray-600">
-                                  ({range.count} {range.count === 1 ? 'row' : 'rows'} missing)
-                                </span>
-                              </div>
-                            </div>
-                            <div className="text-sm text-gray-600">
-                              {formatDate(range.detectedAt)}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Expanded Details */}
-                        {expandedGapRanges.has(range.id) && (
-                          <div className="border-t border-yellow-200 p-4 bg-white">
-                            <div className="space-y-3">
-                              {range.gaps.map((gap, idx) => (
-                                <div key={gap.id} className="border-l-4 border-yellow-400 pl-4">
-                                  <div className="mb-2">
-                                    <span className="font-medium text-gray-900">PK: {gap.primaryKeyValue}</span>
-                                    {range.count > 1 && (
-                                      <span className="ml-2 text-xs text-gray-500">
-                                        ({idx + 1} of {range.count})
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-xs font-medium text-gray-700 mb-1">Source Row (Missing in Target):</p>
-                                  {renderJSON(gap.sourceRow)}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                  {expandedGapRanges.has(range.id) && (
+                    <div className="border-t border-yellow-200 p-4 bg-white space-y-3">
+                      <div>
+                        <p className="text-xs font-medium text-gray-700 mb-1">Sample Source Row</p>
+                        {renderJSON(range.sampleRow)}
                       </div>
-                    ))}
-                  </div>
-                </>
-              );
-            })()}
+                      {range.gaps && range.gaps.length > 0 && (
+                        <div className="space-y-3">
+                          {range.gaps.map((gap, idx) => (
+                            <div key={gap.id} className="border-l-4 border-yellow-400 pl-4">
+                              <div className="mb-2">
+                                <span className="font-medium text-gray-900">PK: {gap.primaryKeyValue}</span>
+                                {range.count > 1 && (
+                                  <span className="ml-2 text-xs text-gray-500">
+                                    ({idx + 1} of {range.count})
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs font-medium text-gray-700 mb-1">Source Row (Missing in Target):</p>
+                              {renderJSON(gap.sourceRow)}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
