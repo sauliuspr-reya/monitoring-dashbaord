@@ -38,21 +38,16 @@ TARGET_SUB_SQL="
 SELECT 
   s.subname,
   s.subenabled,
-  s.slot_name,
-  s.publication,
-  s.conninfo,
+  s.subslotname AS slot_name,
+  s.subpublications AS publications,
+  s.subconninfo AS conninfo,
   ss.pid,
   ss.relid::regclass AS current_table,
-  ss.state,
   ss.received_lsn,
   ss.last_msg_send_time,
   ss.last_msg_receipt_time,
   ss.latest_end_lsn,
-  ss.latest_end_time,
-  ss.apply_error,
-  ss.write_lag,
-  ss.flush_lag,
-  ss.replay_lag
+  ss.latest_end_time
 FROM pg_subscription s
 LEFT JOIN pg_stat_subscription ss ON s.subname = ss.subname
 WHERE s.subname = '${SUB_NAME}';

@@ -67,10 +67,10 @@ export class BackupTaskService {
   protected normalizeTableName(tableName: string): string {
     // Remove existing quotes if present
     let cleaned = tableName.replace(/^["']|["']$/g, '').trim();
-    
+
     // Split by dot to get schema and table
     const parts = cleaned.split('.');
-    
+
     if (parts.length === 2) {
       const [schema, table] = parts;
       // Quote schema if it has uppercase or special chars
@@ -105,7 +105,7 @@ export class BackupTaskService {
   ): Promise<BackupTask> {
     const pool = getDbPool();
     const connHash = this.hashConnectionString(options.connectionString);
-    
+
     // Parse exclude tables (can be array, comma-separated, or newline-separated)
     const excludeTables = this.parseTableList(options.excludeTables);
 
@@ -146,6 +146,10 @@ export class BackupTaskService {
       filepath?: string;
       file_size?: number;
       error_message?: string;
+      snapshot_id?: string;
+      slot_name?: string;
+      publication_name?: string;
+      slot_initial_lsn?: string;
       metadata?: any;
     }
   ): Promise<BackupTask> {
@@ -157,7 +161,7 @@ export class BackupTaskService {
     if (updates.status) {
       setClauses.push(`status = $${paramIndex++}`);
       values.push(updates.status);
-      
+
       // Set timestamps based on status
       if (updates.status === 'running') {
         setClauses.push(`started_at = NOW()`);
@@ -184,6 +188,26 @@ export class BackupTaskService {
     if (updates.error_message !== undefined) {
       setClauses.push(`error_message = $${paramIndex++}`);
       values.push(updates.error_message);
+    }
+
+    if (updates.snapshot_id !== undefined) {
+      setClauses.push(`snapshot_id = $${paramIndex++}`);
+      values.push(updates.snapshot_id);
+    }
+
+    if (updates.slot_name !== undefined) {
+      setClauses.push(`slot_name = $${paramIndex++}`);
+      values.push(updates.slot_name);
+    }
+
+    if (updates.publication_name !== undefined) {
+      setClauses.push(`publication_name = $${paramIndex++}`);
+      values.push(updates.publication_name);
+    }
+
+    if (updates.slot_initial_lsn !== undefined) {
+      setClauses.push(`slot_initial_lsn = $${paramIndex++}`);
+      values.push(updates.slot_initial_lsn);
     }
 
     if (updates.metadata !== undefined) {
@@ -215,7 +239,7 @@ export class BackupTaskService {
   async getTask(taskId: string): Promise<BackupTask | null> {
     const pool = getDbPool();
     const result = await pool.query('SELECT * FROM backup_tasks WHERE id = $1', [taskId]);
-    
+
     if (result.rows.length === 0) {
       return null;
     }
@@ -293,7 +317,7 @@ export class BackupTaskService {
    */
   async deleteTask(taskId: string, deleteFile: boolean = false): Promise<void> {
     const pool = getDbPool();
-    
+
     // Get task first to check for file
     const task = await this.getTask(taskId);
     if (!task) {
@@ -362,7 +386,7 @@ export class BackupTaskService {
       }).join(' ');
 
       const dataFlag = task.schema_only ? '--schema-only' : '';
-      
+
       // Build command - note: if tables are specified, we use -t, otherwise we dump all and use --exclude-table
       const command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' pg_dump ` +
         `-h ${conn.host} ` +
@@ -396,8 +420,8 @@ export class BackupTaskService {
       if (currentTask?.status === 'cancelled') {
         // Clean up file if it was created
         try {
-          await fs.unlink(filepath).catch(() => {});
-        } catch {}
+          await fs.unlink(filepath).catch(() => { });
+        } catch { }
         console.log(`[backup-task] Backup task ${taskId} was cancelled, skipping completion`);
         return;
       }
@@ -471,7 +495,7 @@ export class BackupTaskService {
       const isCompressed = task.filepath.endsWith('.gz');
 
       let command: string;
-      
+
       if (isCustomFormat) {
         // Use pg_restore for custom format dumps
         command = `PGPASSWORD='${conn.password.replace(/'/g, "\\'")}' pg_restore ` +
@@ -543,7 +567,7 @@ export class BackupTaskService {
     if (process.env.BACKUP_DIR) {
       return process.env.BACKUP_DIR;
     }
-    
+
     try {
       await fs.access('/backup');
       return '/backup';
@@ -660,7 +684,7 @@ export class BackupTaskService {
       // Check 1: If process PID exists, check if process is still running
       const metadata = task.metadata || {};
       const processPid = metadata.process_pid;
-      
+
       if (processPid && typeof processPid === 'number') {
         const isRunning = await this.isProcessRunning(processPid);
         if (!isRunning) {
@@ -683,14 +707,14 @@ export class BackupTaskService {
         try {
           const stats = await fs.stat(task.filepath);
           const currentFileSize = stats.size;
-          
+
           // Get last file size update from metadata
-          const lastFileSizeUpdate = metadata.lastFileSizeUpdate 
+          const lastFileSizeUpdate = metadata.lastFileSizeUpdate
             ? new Date(metadata.lastFileSizeUpdate).getTime()
             : new Date(task.updated_at).getTime();
-          
+
           const timeSinceFileSizeUpdate = now.getTime() - lastFileSizeUpdate;
-          
+
           // If file size hasn't changed and it's been more than 2 minutes since last update
           if (currentFileSize === task.file_size && timeSinceFileSizeUpdate > STALL_THRESHOLD_MS) {
             isStalled = true;
