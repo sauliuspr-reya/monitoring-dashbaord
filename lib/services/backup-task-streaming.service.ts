@@ -102,8 +102,7 @@ export class BackupTaskStreamingService extends BackupTaskService {
         stdoutLineCount++;
         await taskLoggerService.appendLog(taskId, 'stdout', 'Initializing consistent backup with replication slot...', stdoutLineCount);
 
-        // Import here to avoid circular dependencies or initialization issues
-        const { createSourceTargetPool } = require('@/lib/db/connection');
+        // Use imported createSourceTargetPool
         dbPool = createSourceTargetPool(connectionString);
         dbClient = await dbPool.connect();
 
