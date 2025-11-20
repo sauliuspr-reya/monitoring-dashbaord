@@ -174,18 +174,19 @@ export default async function handler(
 
       // Step 3: Use estimates for ALL tables - COUNT(*) is too expensive
       const step5Start = Date.now();
-      // Only use exact counts for very small tables (< 100K rows) that are likely to be accurate
+      // Only use exact counts for small tables (< 500K rows) that are likely to be accurate
+      // For larger tables, estimates are used - be careful about data integrity claims
       // For production, estimates are good enough - exact counts kill performance
       const tablesNeedingExactCount: string[] = [];
       for (const tableName of tables) {
         const sourceStats = sourceStatsMap.get(tableName);
-        // Only get exact count for very small tables (< 100K) where estimate might be inaccurate
+        // Only get exact count for small tables (< 500K) where estimate might be inaccurate
         // AND where the table is likely to be fully synced (small = fast to count)
-        if (sourceStats && sourceStats.estimate < 100000 && sourceStats.estimate > 0) {
+        if (sourceStats && sourceStats.estimate < 500000 && sourceStats.estimate > 0) {
           tablesNeedingExactCount.push(tableName);
         }
       }
-      console.log(`[subscriptions/${id}/tables] Step 5 (identify small tables): ${Date.now() - step5Start}ms - Using estimates for ${tables.length - tablesNeedingExactCount.length} tables, exact COUNT(*) for ${tablesNeedingExactCount.length} small tables only`);
+      console.log(`[subscriptions/${id}/tables] Step 5 (identify small tables): ${Date.now() - step5Start}ms - Using estimates for ${tables.length - tablesNeedingExactCount.length} tables, exact COUNT(*) for ${tablesNeedingExactCount.length} small tables (< 500K rows) only`);
 
       // Step 4: Get exact counts for VERY small tables only (in small batches to avoid overload)
       const step6Start = Date.now();
@@ -347,20 +348,43 @@ export default async function handler(
           }
 
             // Determine status based on replication state and row counts
+            // BE CAREFUL: When using estimates, be conservative about data integrity claims
             let status: string;
             if (sourceCount === 0 && targetCount > 0) {
               status = 'checking';
-            } else if (sourceCount === targetCount) {
-              status = 'synced';
-            } else if (Math.abs(sourceCount - targetCount) < 100) {
-              status = 'synced';
-            } else if (sourceCount > targetCount) {
-              status = 'lagging';
-            } else {
-              if (rateOfChange !== null && rateOfChange < 0) {
+            } else if (useEstimate) {
+              // When using estimates, be more conservative with status
+              // Estimates can be off by 10-20%, so only mark as synced if very close
+              const diff = Math.abs(sourceCount - targetCount);
+              const diffPercent = sourceCount > 0 ? (diff / sourceCount) * 100 : 0;
+              
+              if (diffPercent < 1) {
+                // Less than 1% difference - likely synced (but still estimate)
                 status = 'synced';
+              } else if (sourceCount > targetCount && diffPercent < 5) {
+                // Source ahead by less than 5% - likely lagging
+                status = 'lagging';
+              } else if (sourceCount > targetCount) {
+                // Source significantly ahead
+                status = 'lagging';
               } else {
+                // Target ahead or significant difference - warning
                 status = 'warning';
+              }
+            } else {
+              // Exact counts - can be more precise
+              if (sourceCount === targetCount) {
+                status = 'synced';
+              } else if (Math.abs(sourceCount - targetCount) < 100) {
+                status = 'synced';
+              } else if (sourceCount > targetCount) {
+                status = 'lagging';
+              } else {
+                if (rateOfChange !== null && rateOfChange < 0) {
+                  status = 'synced';
+                } else {
+                  status = 'warning';
+                }
               }
             }
 

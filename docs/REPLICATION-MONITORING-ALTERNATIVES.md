@@ -166,3 +166,4 @@ ORDER BY sr.srsubstate, c.relname;
 These methods are **instant**, **CPU-friendly**, and **accurate enough** for monitoring replication progress.
 
 
+

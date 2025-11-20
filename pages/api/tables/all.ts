@@ -754,10 +754,15 @@ export default async function handler(
             const tableSubsForCount = tableSubscriptions.get(tableName) || [];
             const isInSubscription = tableSubsForCount.length > 0;
             
+            // Track whether we're using exact counts or estimates
+            let usingExactCount = false;
+            
             // OPTIMIZATION: Use estimates for ALL tables - COUNT(*) is too expensive
-            // Only use exact counts for very small tables (< 100K rows) in subscriptions
-            if (isInSubscription && sourceStats && sourceStats.estimate < 100000 && sourceStats.estimate > 0) {
-              // Only get exact count for very small tables where estimate might be inaccurate
+            // Only use exact counts for small tables (< 500K rows) in subscriptions
+            // For larger tables, estimates are used - be careful about data integrity claims
+            if (isInSubscription && sourceStats && sourceStats.estimate < 500000 && sourceStats.estimate > 0) {
+              // Only get exact count for small tables where estimate might be inaccurate
+              usingExactCount = true;
               if (sourcePool && sourceStats) {
                 try {
                   const sourceCountResult = await sourcePool.query(`
@@ -778,6 +783,7 @@ export default async function handler(
                 } catch {
                   // Fallback to estimate if COUNT fails
                   sourceCount = Math.max(0, sourceStats.estimate);
+                  usingExactCount = false;
                 }
               }
               
@@ -801,12 +807,15 @@ export default async function handler(
                 } catch {
                   // Fallback to estimate if COUNT fails
                   targetCount = Math.max(0, targetStats.estimate);
+                  usingExactCount = false;
                 }
               }
             } else if (isInSubscription) {
-              // For larger tables, use estimates (fast and accurate enough)
+              // For larger tables (>= 500K), use estimates (fast but less accurate)
+              // BE CAREFUL: Estimates can be off by 10-20%, so be conservative with data integrity claims
               sourceCount = sourceStats?.estimate || 0;
               targetCount = targetStats?.estimate || 0;
+              usingExactCount = false;
             }
 
             const tableSubs = tableSubscriptions.get(tableName) || []; // This table's subscriptions (which subscriptions include this table)
@@ -991,7 +1000,7 @@ export default async function handler(
                   writersOnSource: sourceWriters, // Services writing to AWS
                   writersOnTarget: targetWriters, // Services writing to GCP
                   writersOnBoth: hasWritersOnBothSides, // True if writers on both sides
-                  isEstimate: !isInSubscription, // Use estimate unless we got exact count for subscribed tables
+                  isEstimate: !usingExactCount, // True if using estimates, false if using exact COUNT(*)
                   rateOfChange1Hour, // Rows per minute over last hour
                   rateOfChange24Hour, // Rows per minute over last 24 hours
                 };
