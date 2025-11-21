@@ -80,6 +80,7 @@ export default function VerificationDetail() {
   const [expandedGapRanges, setExpandedGapRanges] = useState<Set<number>>(new Set());
   const [timelineHours, setTimelineHours] = useState(168);
   const [recheckingGaps, setRecheckingGaps] = useState(false);
+  const [restoringGaps, setRestoringGaps] = useState(false);
   const [gapActionMessage, setGapActionMessage] = useState<string | null>(null);
   const [gapActionError, setGapActionError] = useState<string | null>(null);
   const ITEMS_PER_PAGE = 100;
@@ -140,6 +141,36 @@ export default function VerificationDetail() {
       setGapActionError(err.message || 'Failed to re-check gaps');
     } finally {
       setRecheckingGaps(false);
+    }
+  };
+
+  const handleRestoreGaps = async () => {
+    if (!tableName || !details?.job?.id) return;
+    if (!confirm('Are you sure you want to restore all missing gaps? This will insert missing rows into the target database.')) return;
+
+    setRestoringGaps(true);
+    setGapActionError(null);
+    try {
+      const response = await fetch('/api/verification/restore-gaps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: details.job.id }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.message || 'Failed to restore gaps');
+      }
+
+      const result = await response.json();
+      setGapActionMessage(
+        `Restored ${result.restored.toLocaleString()} gap(s). Errors: ${result.errors}`
+      );
+      await fetchDetails();
+    } catch (err: any) {
+      setGapActionError(err.message || 'Failed to restore gaps');
+    } finally {
+      setRestoringGaps(false);
     }
   };
 
@@ -335,7 +366,7 @@ export default function VerificationDetail() {
   // Group consecutive gaps into ranges
   const groupGapsIntoRanges = (gaps: Array<{ id: number; primaryKeyValue: string; sourceRow: Record<string, any>; detectedAt: string }>) => {
     if (gaps.length === 0) return [];
-    
+
     const sortedGaps = [...gaps].sort((a, b) => {
       try {
         const aPk = BigInt(a.primaryKeyValue);
@@ -347,7 +378,7 @@ export default function VerificationDetail() {
         return a.primaryKeyValue.localeCompare(b.primaryKeyValue);
       }
     });
-    
+
     const ranges: Array<{
       id: number;
       startPk: string;
@@ -356,7 +387,7 @@ export default function VerificationDetail() {
       gaps: typeof sortedGaps;
       detectedAt: string;
     }> = [];
-    
+
     let currentRange = {
       id: 0,
       startPk: sortedGaps[0].primaryKeyValue,
@@ -365,7 +396,7 @@ export default function VerificationDetail() {
       gaps: [sortedGaps[0]],
       detectedAt: sortedGaps[0].detectedAt,
     };
-    
+
     for (let i = 1; i < sortedGaps.length; i++) {
       let isSequential = false;
       try {
@@ -375,7 +406,7 @@ export default function VerificationDetail() {
       } catch {
         isSequential = false;
       }
-      
+
       // If consecutive (difference of 1), add to current range
       if (isSequential) {
         currentRange.endPk = sortedGaps[i].primaryKeyValue;
@@ -394,10 +425,10 @@ export default function VerificationDetail() {
         };
       }
     }
-    
+
     // Add the last range
     ranges.push({ ...currentRange, id: ranges.length });
-    
+
     return ranges;
   };
 
@@ -413,13 +444,13 @@ export default function VerificationDetail() {
     });
   };
 
-  const PaginationControls = ({ 
-    currentPage, 
-    totalItems, 
-    onPageChange 
-  }: { 
-    currentPage: number; 
-    totalItems: number; 
+  const PaginationControls = ({
+    currentPage,
+    totalItems,
+    onPageChange
+  }: {
+    currentPage: number;
+    totalItems: number;
     onPageChange: (page: number) => void;
   }) => {
     const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE);
@@ -493,7 +524,7 @@ export default function VerificationDetail() {
   return (
     <div className="min-h-screen bg-gray-50">
       <Navbar />
-      
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="mb-6">
@@ -513,7 +544,7 @@ export default function VerificationDetail() {
         {/* Overview Card */}
         <div className="bg-white rounded-lg shadow p-6 mb-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Overview</h2>
-          
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             <div>
               <p className="text-sm text-gray-600 mb-1">Total Rows Checked</p>
@@ -556,7 +587,7 @@ export default function VerificationDetail() {
                 <span className="font-medium text-gray-700">Last Checked PK:</span>
                 <span className="ml-2 text-gray-600">{job.lastCheckedPkValue || 'N/A'}</span>
               </div>
-              
+
               {/* Row 2: Configuration values */}
               <div>
                 <span className="font-medium text-gray-700">Batch Size:</span>
@@ -692,7 +723,7 @@ export default function VerificationDetail() {
               <AlertCircle className="w-5 h-5 text-red-500 mr-2" />
               Mismatches ({pagination.totalMismatches})
             </h2>
-            
+
             <div className="space-y-4">
               {mismatches.map(mismatch => (
                 <div key={mismatch.id} className="border border-red-200 rounded-lg p-4 bg-red-50">
@@ -704,7 +735,7 @@ export default function VerificationDetail() {
                       </span>
                     </div>
                   </div>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <p className="text-sm font-medium text-gray-700 mb-2">Source Row:</p>
@@ -735,13 +766,22 @@ export default function VerificationDetail() {
                 <AlertCircle className="w-5 h-5 text-yellow-500 mr-2" />
                 Gaps ({pagination.totalGaps})
               </h2>
-              <button
-                onClick={handleRecheckGaps}
-                disabled={recheckingGaps}
-                className="inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-50 hover:bg-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {recheckingGaps ? 'Re-checking…' : 'Re-check gaps'}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleRecheckGaps}
+                  disabled={recheckingGaps}
+                  className="inline-flex items-center px-4 py-2 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-50 hover:bg-yellow-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {recheckingGaps ? 'Re-checking…' : 'Re-check gaps'}
+                </button>
+                <button
+                  onClick={handleRestoreGaps}
+                  disabled={restoringGaps}
+                  className="inline-flex items-center px-4 py-2 border border-green-300 text-sm font-medium rounded-md text-green-800 bg-green-50 hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {restoringGaps ? 'Restoring…' : 'Restore Gaps'}
+                </button>
+              </div>
             </div>
             {gapActionMessage && (
               <div className="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded p-3">
@@ -808,7 +848,7 @@ export default function VerificationDetail() {
             <div className="space-y-3">
               {normalizedGapRanges.map(range => (
                 <div key={range.id} className="border border-yellow-200 rounded-lg bg-yellow-50">
-                  <div 
+                  <div
                     className="p-4 cursor-pointer hover:bg-yellow-100 transition-colors"
                     onClick={() => toggleGapRange(range.id)}
                   >

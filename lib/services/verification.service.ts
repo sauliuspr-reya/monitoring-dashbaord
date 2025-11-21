@@ -262,8 +262,8 @@ export class VerificationService {
    * Uses PostgreSQL system catalogs for accurate detection
    */
   async detectPrimaryKey(pool: Pool, tableName: string): Promise<{ columns: string[]; dataTypes: string[] }> {
-    const [schema, table] = tableName.includes('.') 
-      ? tableName.split('.') 
+    const [schema, table] = tableName.includes('.')
+      ? tableName.split('.')
       : ['public', tableName];
 
     const query = `
@@ -318,15 +318,15 @@ export class VerificationService {
                  cooldown_ms = $2, 
                  updated_at = NOW()
              WHERE id = $3`;
-        
+
         const params = startFromPkValue
           ? [batchSize, cooldownMs, existingJob.id, startFromPkValue]
           : [batchSize, cooldownMs, existingJob.id];
-        
+
         await this.monitoringPool.query(updateQuery, params);
-        
-        return { 
-          ...existingJob, 
+
+        return {
+          ...existingJob,
           status: 'running',
           batch_size: batchSize,
           cooldown_ms: cooldownMs,
@@ -380,7 +380,7 @@ export class VerificationService {
          (table_name, status, batch_size, cooldown_ms, primary_key_columns)
          VALUES ($1, 'running', $2, $3, $4)
          RETURNING *`;
-    
+
     const params = startFromPkValue
       ? [tableName, batchSize, cooldownMs, pkColumns, startFromPkValue]
       : [tableName, batchSize, cooldownMs, pkColumns];
@@ -458,14 +458,14 @@ export class VerificationService {
   ): Promise<RowWithHash[]> {
     // Build composite key expression
     const pkExpression = this.buildPkExpression(pkColumns);
-    
+
     // Keyset pagination: Use simple > comparison without explicit casting
     // PostgreSQL handles implicit type coercion (TEXT → native column type)
     // This works for all PK types: INT, BIGINT, VARCHAR, UUID, etc.
     // For composite keys, we concatenate with '::' delimiter
     // Skip NULL primary keys to avoid comparison issues
-    const whereClause = lastPkValue 
-      ? `WHERE ${pkExpression} IS NOT NULL AND ${pkExpression} > $1` 
+    const whereClause = lastPkValue
+      ? `WHERE ${pkExpression} IS NOT NULL AND ${pkExpression} > $1`
       : `WHERE ${pkExpression} IS NOT NULL`;
     const params: any[] = lastPkValue ? [lastPkValue, batchSize] : [batchSize];
     const limitParamIndex = lastPkValue ? '$2' : '$1';
@@ -794,6 +794,58 @@ export class VerificationService {
     pushCurrent();
 
     return ranges;
+  }
+
+  /**
+   * Restore missing gaps onto the target database
+   * Reads gaps from table_verification_gaps and inserts them into target
+   */
+  async restoreGaps(jobId: number, targetPool: Pool): Promise<{ restored: number; errors: number }> {
+    // Get all gaps for the job (fetch in batches to avoid memory issues)
+    const batchSize = 1000;
+    let offset = 0;
+    let restored = 0;
+    let errors = 0;
+
+    while (true) {
+      const gaps = await this.getGaps(jobId, batchSize, offset);
+
+      if (gaps.length === 0) {
+        break;
+      }
+
+      for (const gap of gaps) {
+        try {
+          const { table_name, source_row } = gap;
+          const rowData = source_row as Record<string, any>;
+
+          // Construct INSERT statement
+          const columns = Object.keys(rowData);
+          if (columns.length === 0) continue;
+
+          const values = Object.values(rowData);
+          const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
+          const columnNames = columns.map(c => `"${c}"`).join(', '); // Quote columns
+
+          // Handle schema/table name parsing
+          const { schema, table } = this.parseTableName(table_name);
+          const quotedTableName = `"${schema}"."${table}"`;
+
+          // Use ON CONFLICT DO NOTHING to avoid errors if row appeared in the meantime
+          const query = `INSERT INTO ${quotedTableName} (${columnNames}) VALUES (${placeholders}) ON CONFLICT DO NOTHING`;
+
+          await targetPool.query(query, values);
+          restored++;
+        } catch (err) {
+          console.error(`Failed to restore gap ${gap.id}:`, err);
+          errors++;
+        }
+      }
+
+      offset += batchSize;
+    }
+
+    return { restored, errors };
   }
 
   /**
