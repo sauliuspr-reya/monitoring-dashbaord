@@ -163,9 +163,17 @@ export default function VerificationDetail() {
       }
 
       const result = await response.json();
-      setGapActionMessage(
-        `Restored ${result.restored.toLocaleString()} gap(s). Errors: ${result.errors}`
-      );
+
+      if (result.errors && result.errors.length > 0) {
+        setGapActionError(
+          `Restored ${result.restored.toLocaleString()} gap(s), but encountered errors:\n${result.errors.join('\n')}`
+        );
+      } else {
+        setGapActionMessage(
+          `Successfully restored ${result.restored.toLocaleString()} gap(s).`
+        );
+      }
+
       await fetchDetails();
     } catch (err: any) {
       setGapActionError(err.message || 'Failed to restore gaps');

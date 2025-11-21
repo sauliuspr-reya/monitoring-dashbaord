@@ -48,14 +48,16 @@ export default async function handler(
       useExistingPublication = false, // Whether to use an existing publication
       existingPublicationName, // Name of existing publication to use (deprecated, use existingPublicationNames)
       existingPublicationNames, // Array of publication names to use (supports multiple)
+      slotName: manualSlotName, // Optional: manually provided slot name
+      publicationName: manualPublicationName, // Optional: manually provided publication name (overrides generation)
     } = req.body;
 
     // Fall back to environment variables if connection strings are not provided or empty
-    const finalSourceConnection = (sourceDbConnection && sourceDbConnection.trim() !== '') 
-      ? sourceDbConnection 
+    const finalSourceConnection = (sourceDbConnection && sourceDbConnection.trim() !== '')
+      ? sourceDbConnection
       : (process.env.SOURCE_DATABASE_URL || '');
-    const finalTargetConnection = (targetDbConnection && targetDbConnection.trim() !== '') 
-      ? targetDbConnection 
+    const finalTargetConnection = (targetDbConnection && targetDbConnection.trim() !== '')
+      ? targetDbConnection
       : (process.env.TARGET_DATABASE_URL || '');
 
     if (!name) {
@@ -82,7 +84,7 @@ export default async function handler(
     // Basic validation: connection strings should look like PostgreSQL connection strings
     const postgresUrlPattern = /^postgres(ql)?:\/\//i;
     const postgresConnPattern = /^(host|user|password|dbname|port)=/i;
-    
+
     if (!postgresUrlPattern.test(finalSourceConnection) && !postgresConnPattern.test(finalSourceConnection)) {
       return res.status(400).json({
         error: 'Invalid source database connection string format',
@@ -104,14 +106,14 @@ export default async function handler(
     }
 
     // Support both old single publication and new multiple publications
-    const publicationNames = useExistingPublication 
+    const publicationNames = useExistingPublication
       ? (existingPublicationNames || (existingPublicationName ? [existingPublicationName] : []))
       : [];
-    
+
     if (useExistingPublication && publicationNames.length === 0) {
       return res.status(400).json({ error: 'At least one publication must be selected when useExistingPublication is true' });
     }
-    
+
     if (useExistingPublication && customTables && customTables.length === 0) {
       return res.status(400).json({ error: 'At least one table must be selected from the publications' });
     }
@@ -119,7 +121,15 @@ export default async function handler(
     // Generate names from subscription name (sanitize for SQL identifiers)
     const sanitizedName = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
     const subscriptionName = `${sanitizedName}_subscription`;
-    const slotName = `${sanitizedName}_slot`;
+
+    // Use manual slot name if provided, otherwise generate one
+    const slotName = manualSlotName || `${sanitizedName}_slot`;
+
+    // Use manual publication name if provided (for single publication mode)
+    if (manualPublicationName && !useExistingPublication) {
+      // If manual publication name is provided, we treat it as "creating a new publication" 
+      // but with a specific name, or potentially using one that the user claims exists/will exist
+    }
 
     // Create connection pools
     let sourcePool, targetPool;
@@ -138,12 +148,12 @@ export default async function handler(
       try {
         await sourcePool.query('SELECT 1');
       } catch (sourceError: any) {
-        await sourcePool.end().catch(() => {});
-        await targetPool.end().catch(() => {});
+        await sourcePool.end().catch(() => { });
+        await targetPool.end().catch(() => { });
         return res.status(401).json({
           error: 'Failed to connect to source database',
           details: sourceError.message || 'Authentication failed. Please check your source database connection string and credentials.',
-          hint: sourceError.message?.includes('password authentication failed') 
+          hint: sourceError.message?.includes('password authentication failed')
             ? 'Password authentication failed. Please verify the username and password in your source database connection string.'
             : 'Please verify the source database connection string is correct and the database is accessible.',
         });
@@ -152,8 +162,8 @@ export default async function handler(
       try {
         await targetPool.query('SELECT 1');
       } catch (targetError: any) {
-        await sourcePool.end().catch(() => {});
-        await targetPool.end().catch(() => {});
+        await sourcePool.end().catch(() => { });
+        await targetPool.end().catch(() => { });
         return res.status(401).json({
           error: 'Failed to connect to target database',
           details: targetError.message || 'Authentication failed. Please check your target database connection string and credentials.',
@@ -167,7 +177,7 @@ export default async function handler(
       let finalPublicationName: string = ''; // For database storage
       let escapedPubName: string = ''; // For CREATE SUBSCRIPTION command
       let tables: string[] = []; // Tables that will be replicated
-      
+
       if (useExistingPublication) {
         // Verify all existing publications exist
         for (const pubName of publicationNames) {
@@ -184,7 +194,7 @@ export default async function handler(
             });
           }
         }
-        
+
         // If customTables are provided, verify they exist in the selected publications
         if (customTables && customTables.length > 0) {
           // Get all tables from selected publications
@@ -198,7 +208,7 @@ export default async function handler(
             const pubTables = pubTablesResult.rows.map((r: any) => r.table_name);
             allPubTables.push(...pubTables);
           }
-          
+
           // Check if all selected tables are in the publications
           const invalidTables = customTables.filter((t: string) => !allPubTables.includes(t));
           if (invalidTables.length > 0) {
@@ -212,10 +222,10 @@ export default async function handler(
         }
       } else {
         // Create new publication
-        const publicationName = `${sanitizedName}_publication`;
+        const publicationName = manualPublicationName || `${sanitizedName}_publication`;
         escapedPubName = `"${publicationName.replace(/"/g, '""')}"`;
         finalPublicationName = publicationName;
-        
+
         const pubCheck = await sourcePool.query(`
           SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
         `, [publicationName]);
@@ -230,11 +240,11 @@ export default async function handler(
               WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
               ORDER BY schemaname, tablename
             `);
-            
+
             const allTables = allTablesResult.rows.map((r: any) => r.table_name);
             const excludedSet = new Set(excludeTables.map((t: string) => t.toLowerCase()));
             const includedTables = allTables.filter((t: string) => !excludedSet.has(t.toLowerCase()));
-            
+
             if (includedTables.length === 0) {
               await sourcePool.end();
               await targetPool.end();
@@ -243,10 +253,10 @@ export default async function handler(
                 details: 'All tables are excluded. Please exclude fewer tables or use include mode.',
               });
             }
-            
+
             // Set tables to included tables
             tables = includedTables;
-            
+
             // Create publication with included tables
             const tableList = includedTables.map((t: string) => formatTableIdentifier(t)).join(', ');
             await sourcePool.query(`
@@ -268,7 +278,7 @@ export default async function handler(
               ORDER BY schemaname, tablename
             `);
             tables = allTablesResult.rows.map((r: any) => r.table_name);
-            
+
             await sourcePool.query(`
               CREATE PUBLICATION ${escapedPubName} FOR ALL TABLES
             `);
@@ -281,12 +291,12 @@ export default async function handler(
             WHERE pubname = $1
           `, [publicationName]);
           tables = pubTablesResult.rows.map((r: any) => r.table_name);
-          
+
           // If customTables provided, add missing tables to publication
           if (customTables && customTables.length > 0) {
             const existingPubTables = pubTablesResult.rows.map((r: any) => r.table_name);
             const missingTables = customTables.filter((t: string) => !existingPubTables.includes(t));
-            
+
             // Add any missing tables to the existing publication
             if (missingTables.length > 0) {
               for (const table of missingTables) {
@@ -327,8 +337,22 @@ export default async function handler(
         SELECT COUNT(*) as count FROM pg_replication_slots WHERE slot_name = $1
       `, [slotName]);
 
-      const createSlot = slotCheck.rows[0].count === '0';
-      
+      // If manual slot name provided, we assume it exists or user wants to use that specific name
+      // If it exists, we don't create it. If it doesn't exist and it was manual, we might still want to create it?
+      // Better logic: If manual slot provided, check if it exists. 
+      // If it exists, create_slot = false.
+      // If it doesn't exist, create_slot = true (create the named slot).
+      // BUT for the "zero data loss" case, the slot MUST exist.
+
+      const slotExists = slotCheck.rows[0].count !== '0';
+
+      // If manual slot name was provided and it doesn't exist, warn but proceed (will try to create)
+      if (manualSlotName && !slotExists) {
+        console.warn(`Manual slot '${manualSlotName}' provided but does not exist on source. Will attempt to create it.`);
+      }
+
+      const createSlot = !slotExists;
+
       // If slot exists but subscription doesn't, warn user
       if (!createSlot) {
         console.warn(`Replication slot '${slotName}' already exists on source. Will use existing slot.`);
@@ -337,7 +361,7 @@ export default async function handler(
       // Step 5: Validate that tables exist on target database
       // PostgreSQL requires tables to exist on subscriber before creating subscription
       let tablesToCheck: string[] = [];
-      
+
       if (useExistingPublication) {
         // Get all tables from selected publications
         for (const pubName of publicationNames) {
@@ -349,7 +373,7 @@ export default async function handler(
           const pubTables = pubTablesResult.rows.map((r: any) => r.table_name);
           tablesToCheck.push(...pubTables);
         }
-        
+
         // If customTables are provided, only check those
         // NOTE: We'll create a new publication with only selected tables
         if (customTables && customTables.length > 0) {
@@ -371,26 +395,26 @@ export default async function handler(
           tablesToCheck = tables;
         }
       }
-      
+
       // Remove duplicates
       tablesToCheck = [...new Set(tablesToCheck)];
-      
+
       // Check which tables exist on target
       if (tablesToCheck.length > 0) {
         const missingTables: string[] = [];
         const emptyTables: string[] = [];
-        
+
         for (const table of tablesToCheck) {
           const { schema, table: rawTableName } = parseTableIdentifier(table);
           const cleanTableName = rawTableName;
           const qualifiedName = buildQualifiedName(schema, cleanTableName);
-          
+
           // Use to_regclass to resolve the table (handles quoted identifiers)
           const regclassResult = await targetPool.query(
             `SELECT to_regclass($1) AS regclass`,
             [qualifiedName]
           );
-          
+
           if (!regclassResult.rows[0]?.regclass) {
             missingTables.push(table);
           } else if (dataCopy === false) {
@@ -405,16 +429,16 @@ export default async function handler(
                 `,
                 [qualifiedName]
               );
-              
+
               const rowEstimate = parseInt(rowCountResult.rows[0]?.estimate || '0', 10);
-              
+
               // If table exists but has no data and copy_data = false, warn user
               if (rowEstimate === 0) {
                 // Double-check with actual count for small tables (more accurate)
                 const actualCountResult = await targetPool.query(
                   `SELECT COUNT(*)::bigint AS count FROM ${qualifiedName}`
                 ).catch(() => ({ rows: [{ count: '0' }] }));
-                
+
                 const actualCount = parseInt(actualCountResult.rows[0]?.count || '0', 10);
                 if (actualCount === 0) {
                   emptyTables.push(table);
@@ -426,7 +450,7 @@ export default async function handler(
             }
           }
         }
-        
+
         if (missingTables.length > 0) {
           await sourcePool.end();
           await targetPool.end();
@@ -442,7 +466,7 @@ export default async function handler(
             ],
           });
         }
-        
+
         // Warn if tables exist but are empty and copy_data = false
         if (emptyTables.length > 0 && dataCopy === false) {
           console.warn(`Warning: ${emptyTables.length} tables exist but are empty. Baseline backup may not have been restored.`);
@@ -461,7 +485,7 @@ export default async function handler(
         const sourceUser = decodeURIComponent(sourceUrl.username);
         const sourcePass = decodeURIComponent(sourceUrl.password);
         const sourceDb = sourceUrl.pathname.slice(1).split('?')[0];
-        
+
         // Escape single quotes in password
         const escapedPass = sourcePass.replace(/'/g, "''");
         connString = `host=${sourceHost} port=${sourcePort} dbname=${sourceDb} user=${sourceUser} password='${escapedPass}'`;
@@ -475,10 +499,10 @@ export default async function handler(
       const escapedSlotName = slotName.replace(/'/g, "''");
       // Escape connection string - replace single quotes with two single quotes
       const escapedConnString = connString.replace(/'/g, "''");
-      
+
       // Build publication list for CREATE SUBSCRIPTION
       let publicationList: string;
-      
+
       if (useExistingPublication) {
         // If customTables are provided, create a NEW publication with only selected tables
         // This allows filtering tables when using existing publications
@@ -486,23 +510,23 @@ export default async function handler(
           // Create a new publication with only the selected tables
           const filteredPubName = `${subscriptionName}_filtered_publication`;
           const escapedFilteredPubName = filteredPubName.replace(/"/g, '""');
-          
+
           // Check if filtered publication already exists
           const filteredPubCheck = await sourcePool.query(`
             SELECT COUNT(*) as count FROM pg_publication WHERE pubname = $1
           `, [filteredPubName]);
-          
+
           if (filteredPubCheck.rows[0].count === '0') {
             // Create new publication with only selected tables
-          const tableList = customTables.map((t: string) => formatTableIdentifier(t)).join(', ');
-            
+            const tableList = customTables.map((t: string) => formatTableIdentifier(t)).join(', ');
+
             await sourcePool.query(`
               CREATE PUBLICATION "${escapedFilteredPubName}" FOR TABLE ${tableList}
             `);
-            
+
             console.log(`Created filtered publication '${filteredPubName}' with ${customTables.length} tables`);
           }
-          
+
           // Use the filtered publication instead of the original
           publicationList = `"${escapedFilteredPubName}"`;
           finalPublicationName = filteredPubName;
@@ -510,12 +534,12 @@ export default async function handler(
           tables = customTables;
         } else {
           // No customTables - use existing publications as-is
-          const escapedPubNames = publicationNames.map((pubName: string) => 
+          const escapedPubNames = publicationNames.map((pubName: string) =>
             `"${pubName.replace(/"/g, '""')}"`
           );
           publicationList = escapedPubNames.join(', ');
           finalPublicationName = publicationNames.join(','); // Store as comma-separated
-          
+
           // Get all tables from all publications
           const allPubTables: string[] = [];
           for (const pubName of publicationNames) {
@@ -533,7 +557,7 @@ export default async function handler(
         // Single new publication - escapedPubName already defined above
         publicationList = escapedPubName;
       }
-      
+
       await targetPool.query(`
         CREATE SUBSCRIPTION "${escapedSubName}"
         CONNECTION '${escapedConnString}'
@@ -570,10 +594,10 @@ export default async function handler(
       // Step 7: Save table list
       const subscriptionId = result.rows[0].id;
       // Use customTables if provided (filtered selection), otherwise use all tables from publication
-      const tablesToSave = (useExistingPublication && customTables && customTables.length > 0) 
-        ? customTables 
+      const tablesToSave = (useExistingPublication && customTables && customTables.length > 0)
+        ? customTables
         : tables;
-      
+
       for (const table of tablesToSave) {
         const { schema, table: tableNameOnly } = parseTableIdentifier(table);
         await monitoringPool.query(`
@@ -599,12 +623,12 @@ export default async function handler(
     }
   } catch (error: any) {
     console.error('Error creating subscription:', error);
-    
+
     // Provide more helpful error messages for common issues
     let errorMessage = error.message || 'Failed to create subscription';
     let errorDetails = error.detail || error.message;
     let hint: string | undefined;
-    
+
     if (error.message?.includes('password authentication failed')) {
       errorMessage = 'Database authentication failed';
       errorDetails = 'The username or password in your connection string is incorrect. Please verify your database credentials.';
@@ -620,7 +644,7 @@ export default async function handler(
       errorDetails = 'Cannot create new replication slot because all available slots are in use.';
       hint = 'Free up replication slots by dropping unused subscriptions or inactive slots. Run the free-replication-slots.sh script to check and free slots.';
     }
-    
+
     res.status(500).json({
       error: errorMessage,
       details: errorDetails,
