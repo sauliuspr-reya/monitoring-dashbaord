@@ -29,6 +29,7 @@ interface BackupModalProps {
     excludeTables?: string[];
     schemaOnly: boolean;
     enableReplication: boolean;
+    name?: string;
   }) => void;
   backingUp: boolean;
   initialTables?: string[];
@@ -36,6 +37,8 @@ interface BackupModalProps {
   initialSchemaOnly?: boolean;
   initialEnableReplication?: boolean;
   initialExcludeMode?: boolean;
+  serviceName?: string;
+  initialName?: string;
 }
 
 export default function BackupModal({
@@ -50,6 +53,8 @@ export default function BackupModal({
   initialSchemaOnly,
   initialEnableReplication,
   initialExcludeMode,
+  serviceName,
+  initialName,
 }: BackupModalProps) {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [excludeMode, setExcludeMode] = useState(initialExcludeMode || false);
@@ -61,6 +66,7 @@ export default function BackupModal({
   const [backupInfoMap, setBackupInfoMap] = useState<Map<string, { lastBackupDate?: string; lastBackupId?: string }>>(new Map());
   const [showPasteList, setShowPasteList] = useState(false);
   const [pasteListText, setPasteListText] = useState('');
+  const [backupName, setBackupName] = useState(initialName || '');
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -88,6 +94,34 @@ export default function BackupModal({
     return `${(num / 1000000).toFixed(1)}M`;
   };
 
+  // Auto-generate backup name when tables are selected
+  useEffect(() => {
+    if (isOpen && !backupName && selectedTables.size > 0) {
+      const tableArray = Array.from(selectedTables);
+      const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      
+      if (serviceName) {
+        // Service-based backup
+        const sanitizedService = serviceName.replace(/[^a-zA-Z0-9_-]/g, '_');
+        setBackupName(`${sanitizedService}_backup_${timestamp}`);
+      } else if (excludeMode) {
+        // Exclude mode - "all except N tables"
+        setBackupName(`full_backup_except_${selectedTables.size}_${timestamp}`);
+      } else if (tableArray.length === 1) {
+        // Single table
+        const tableName = tableArray[0].split('.').pop() || tableArray[0];
+        setBackupName(`${tableName}_backup_${timestamp}`);
+      } else if (tableArray.length <= 5) {
+        // Few tables - list them
+        const names = tableArray.map(t => t.split('.').pop() || t).join('_');
+        setBackupName(`${names}_backup_${timestamp}`);
+      } else {
+        // Many tables - just count
+        setBackupName(`${tableArray.length}_tables_backup_${timestamp}`);
+      }
+    }
+  }, [isOpen, selectedTables, excludeMode, serviceName, backupName]);
+
   // Initialize from props when modal opens
   useEffect(() => {
     if (isOpen) {
@@ -111,12 +145,17 @@ export default function BackupModal({
         setExcludeMode(initialExcludeMode);
       }
       
+      // Reset name if not initialName
+      if (!initialName) {
+        setBackupName('');
+      }
+      
       // Reset other state
       setSearchQuery('');
       setPasteListText('');
       setShowPasteList(false);
     }
-  }, [isOpen, initialTables, initialExcludeTables, initialSchemaOnly, initialEnableReplication, initialExcludeMode]);
+  }, [isOpen, initialTables, initialExcludeTables, initialSchemaOnly, initialEnableReplication, initialExcludeMode, initialName]);
 
   const formatDate = (dateString?: string) => {
     if (!dateString) return '—';
@@ -339,6 +378,7 @@ export default function BackupModal({
       excludeTables: excludeMode ? Array.from(selectedTables) : undefined,
       schemaOnly,
       enableReplication: !schemaOnly && enableReplication,
+      name: backupName.trim() || undefined,
     });
   };
 
@@ -365,6 +405,23 @@ export default function BackupModal({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-6">
+          {/* Backup Name/Description */}
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Backup Name/Description {serviceName && <span className="text-purple-600">(Service: {serviceName})</span>}
+            </label>
+            <input
+              type="text"
+              value={backupName}
+              onChange={(e) => setBackupName(e.target.value)}
+              placeholder="e.g., migration_prep, weekly_backup, pre_deployment"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Optional: Give this backup a meaningful name to remember its purpose
+            </p>
+          </div>
+
           {/* Mode Toggle */}
           <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
             <label className="flex items-center">

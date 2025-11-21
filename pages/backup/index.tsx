@@ -72,6 +72,8 @@ export default function BackupPage() {
     schemaOnly?: boolean;
     enableReplication?: boolean;
     excludeMode?: boolean;
+    serviceName?: string;
+    initialName?: string;
   } | null>(null);
   
   // Tab state for jobs list
@@ -93,10 +95,17 @@ export default function BackupPage() {
       const tableList = tablesParam.split(',').filter(Boolean);
       
       if (tableList.length > 0) {
-        // Open backup modal with pre-selected tables
+        // Auto-generate backup name from service
+        const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
+        const sanitizedService = service.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const autoName = `${sanitizedService}_backup_${timestamp}`;
+        
+        // Open backup modal with pre-selected tables and service name
         setBackupModalInitialState({
           tables: tableList,
           enableReplication: true,
+          serviceName: service,
+          initialName: autoName,
         });
         setShowBackupModal(true);
         
@@ -584,6 +593,8 @@ export default function BackupPage() {
         initialSchemaOnly={backupModalInitialState?.schemaOnly}
         initialEnableReplication={backupModalInitialState?.enableReplication}
         initialExcludeMode={backupModalInitialState?.excludeMode}
+        serviceName={backupModalInitialState?.serviceName}
+        initialName={backupModalInitialState?.initialName}
       />
 
       <RestoreModal

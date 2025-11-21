@@ -38,6 +38,7 @@ export default async function handler(
       snapshotId,
       schemaOnly = false,
       enableReplication = false, // If true, creates publication and slot
+      name, // Optional backup name/description
     } = req.body;
 
     // Use SOURCE_DATABASE_URL from environment
@@ -82,6 +83,14 @@ export default async function handler(
       slotName = `backup_slot_${timestamp}`;
     }
 
+    // Generate filename from name or timestamp
+    let filename: string | undefined;
+    if (name && name.trim()) {
+      const sanitizedName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+      const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      filename = `${sanitizedName}_${timestamp}`;
+    }
+
     // Create backup task
     // We delegate slot creation to the background worker to ensure consistency (single transaction)
     const task = await backupTaskService.createTask('backup', {
@@ -93,6 +102,7 @@ export default async function handler(
       slotInitialLsn: undefined, // Will be populated by background worker
       connectionString: sourceConnectionString,
       schemaOnly,
+      filename: filename, // Custom backup name/description
       createdBy: req.headers['x-user'] as string || undefined,
     });
 
