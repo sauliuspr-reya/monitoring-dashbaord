@@ -119,16 +119,14 @@ export class BackupTaskStreamingService extends BackupTaskService {
           );
         }
 
-        // Start transaction
-        await dbClient.query('BEGIN');
-
         // Generate names if not provided
         if (!slotName) slotName = `backup_slot_${Date.now()}`;
         if (!publicationName) publicationName = `backup_pub_${Date.now()}`;
 
         // 1. Create Publication (if not exists)
-        // We can't easily check if it exists inside the transaction without potentially failing
-        // so we'll try to create it and ignore "already exists" error or check first
+        // We create publication BEFORE starting the transaction because creating a publication
+        // involves writes to system catalogs, and we cannot create a replication slot
+        // in a transaction that has already performed writes.
         try {
           const checkPub = await dbClient.query('SELECT 1 FROM pg_publication WHERE pubname = $1', [publicationName]);
           if (checkPub.rows.length === 0) {
@@ -156,6 +154,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
           stdoutLineCount++;
           await taskLoggerService.appendLog(taskId, 'stdout', `Warning creating publication: ${err.message}`, stdoutLineCount);
         }
+
+        // Start transaction
+        await dbClient.query('BEGIN');
 
         // 2. Create Replication Slot
         // Check if exists first
