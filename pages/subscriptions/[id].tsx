@@ -304,24 +304,112 @@ export default function SubscriptionDetails() {
                 {(subscription.slotRestartLsn || subscription.workerPid || subscription.replicationState) && (
                   <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
                     {(subscription.slotRestartLsn || subscription.slotConfirmedFlushLsn) && (
-                      <div className="p-4 bg-gray-50 rounded-lg">
-                        <h3 className="text-sm font-semibold text-gray-800 mb-3">Replication Slot</h3>
+                      <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold text-gray-800">Replication Slot Details</h3>
+                          {subscription.slotActive !== undefined && (
+                            <span className={`px-2 py-1 rounded text-xs font-medium ${
+                              subscription.slotActive 
+                                ? 'bg-green-100 text-green-800' 
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {subscription.slotActive ? '🟢 Active' : '⚠️ Inactive'}
+                            </span>
+                          )}
+                        </div>
+                        
                         <dl className="space-y-2 text-sm">
-                          <div className="flex justify-between">
-                            <dt className="text-gray-500">Initial LSN</dt>
-                            <dd className="font-mono text-gray-900">{formatLsn(subscription.slotInitialLsn)}</dd>
+                          {/* Slot Type & Plugin */}
+                          <div className="flex justify-between border-b border-gray-200 pb-2">
+                            <dt className="text-gray-500">Slot Type / Plugin</dt>
+                            <dd className="font-mono text-gray-900">
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-xs mr-1">
+                                logical
+                              </span>
+                              <span className="text-gray-500">pgoutput</span>
+                            </dd>
                           </div>
+                          
+                          {/* Activity Status */}
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Restart LSN</dt>
-                            <dd className="font-mono text-gray-900">{formatLsn(subscription.slotRestartLsn)}</dd>
+                            <dt className="text-gray-500">Status</dt>
+                            <dd className="text-gray-900">
+                              {subscription.slotActive ? (
+                                <span className="text-green-600">✓ Subscription using slot</span>
+                              ) : (
+                                <span className="text-yellow-600">⚠ Waiting for subscription</span>
+                              )}
+                            </dd>
                           </div>
-                          <div className="flex justify-between">
-                            <dt className="text-gray-500">Confirmed Flush LSN</dt>
-                            <dd className="font-mono text-gray-900">{formatLsn(subscription.slotConfirmedFlushLsn)}</dd>
+
+                          {/* LSN Positions */}
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <div className="text-xs font-semibold text-gray-600 mb-2">LSN Positions</div>
+                            <div className="space-y-1.5">
+                              <div className="flex justify-between">
+                                <dt className="text-gray-500 text-xs">Initial LSN</dt>
+                                <dd className="font-mono text-xs text-gray-900">{formatLsn(subscription.slotInitialLsn)}</dd>
+                              </div>
+                              <div className="flex justify-between">
+                                <dt className="text-gray-500 text-xs">Restart LSN</dt>
+                                <dd className="font-mono text-xs text-gray-900">{formatLsn(subscription.slotRestartLsn)}</dd>
+                              </div>
+                              <div className="flex justify-between">
+                                <dt className="text-gray-500 text-xs">Confirmed Flush LSN</dt>
+                                <dd className="font-mono text-xs text-gray-900">{formatLsn(subscription.slotConfirmedFlushLsn)}</dd>
+                              </div>
+                            </div>
                           </div>
-                          <div className="flex justify-between">
+
+                          {/* WAL Status */}
+                          <div className="flex justify-between mt-3 pt-3 border-t border-gray-200">
                             <dt className="text-gray-500">WAL Status</dt>
-                            <dd className="text-gray-900">{subscription.slotWalStatus || '—'}</dd>
+                            <dd className="text-gray-900">
+                              {subscription.slotWalStatus === 'reserved' && (
+                                <span className="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">
+                                  🟢 Reserved
+                                </span>
+                              )}
+                              {subscription.slotWalStatus === 'extended' && (
+                                <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded text-xs">
+                                  🟡 Extended
+                                </span>
+                              )}
+                              {!subscription.slotWalStatus && (
+                                <span className="text-gray-400">—</span>
+                              )}
+                            </dd>
+                          </div>
+
+                          {/* Slot Lag */}
+                          {subscription.slotLagBytes !== undefined && subscription.slotLagBytes > 0 && (
+                            <div className="flex justify-between">
+                              <dt className="text-gray-500">WAL Lag</dt>
+                              <dd className={`font-semibold ${
+                                subscription.slotLagBytes > 5368709120 ? 'text-red-600' :
+                                subscription.slotLagBytes > 1073741824 ? 'text-yellow-600' :
+                                'text-green-600'
+                              }`}>
+                                {formatBytes(subscription.slotLagBytes)}
+                                {subscription.slotLagBytes > 1073741824 && (
+                                  <span className="ml-1 text-xs">⚠️</span>
+                                )}
+                              </dd>
+                            </div>
+                          )}
+
+                          {/* Helpful Context */}
+                          <div className="mt-3 pt-3 border-t border-gray-200 bg-blue-50 -mx-4 -mb-4 px-4 py-3 rounded-b-lg">
+                            <div className="text-xs text-blue-800">
+                              <div className="font-semibold mb-1">💡 Slot Information</div>
+                              <div className="space-y-1 text-blue-700">
+                                <div>• <strong>Restart LSN</strong>: Where replication resumes from</div>
+                                <div>• <strong>WAL Status</strong>: Reserved = keeping WAL for replay</div>
+                                {!subscription.slotActive && (
+                                  <div className="text-yellow-700">• <strong>Inactive</strong>: Normal before subscription created</div>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </dl>
                       </div>
