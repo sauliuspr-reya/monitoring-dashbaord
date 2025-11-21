@@ -308,6 +308,10 @@ export default function SubscriptionDetails() {
                         <h3 className="text-sm font-semibold text-gray-800 mb-3">Replication Slot</h3>
                         <dl className="space-y-2 text-sm">
                           <div className="flex justify-between">
+                            <dt className="text-gray-500">Initial LSN</dt>
+                            <dd className="font-mono text-gray-900">{formatLsn(subscription.slotInitialLsn)}</dd>
+                          </div>
+                          <div className="flex justify-between">
                             <dt className="text-gray-500">Restart LSN</dt>
                             <dd className="font-mono text-gray-900">{formatLsn(subscription.slotRestartLsn)}</dd>
                           </div>

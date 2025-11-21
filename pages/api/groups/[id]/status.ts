@@ -18,7 +18,7 @@ export default async function handler(
 
   try {
     const pool = getDbPool();
-    
+
     // Get subscription details
     const groupResult = await pool.query(`
       SELECT * FROM subscriptions WHERE id = $1
@@ -40,7 +40,7 @@ export default async function handler(
       const alertingService = new AlertingService();
 
       // Get replication status (with retry for connection errors)
-      const status = await retryQuery(() => 
+      const status = await retryQuery(() =>
         monitoringService.getReplicationStatus(
           sourcePool,
           targetPool,
@@ -52,7 +52,7 @@ export default async function handler(
       );
 
       // Get table count (with retry)
-      const tablesResult = await retryQuery(() => 
+      const tablesResult = await retryQuery(() =>
         monitoringService.getPublicationTables(
           sourcePool,
           group.publication_name
@@ -66,7 +66,7 @@ export default async function handler(
       // Only query if explicitly requested (for backward compatibility, default to true)
       const includeTables = req.query.includeTables !== 'false';
       let tablesWithIssues = 0;
-      
+
       if (includeTables) {
         // Get table-level metrics (check which column exists)
         const metricsColumnCheck = await pool.query(`
@@ -76,9 +76,9 @@ export default async function handler(
             AND column_name IN ('subscription_id', 'group_id')
           LIMIT 1
         `);
-        
+
         const metricsIdColumn = metricsColumnCheck.rows[0]?.column_name || 'subscription_id';
-        
+
         const tableMetricsResult = await pool.query(`
           SELECT 
             table_name,
@@ -124,6 +124,7 @@ export default async function handler(
         slotLagBytes: status.slotLagBytes || 0,
         slotName: group.slot_name,
         slotActive: status.slotActive,
+        slotInitialLsn: group.slot_initial_lsn,
         slotRestartLsn: status.slotRestartLsn,
         slotConfirmedFlushLsn: status.slotConfirmedFlushLsn,
         slotWalStatus: status.slotWalStatus,

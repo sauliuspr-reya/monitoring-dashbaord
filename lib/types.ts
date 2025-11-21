@@ -103,6 +103,7 @@ export interface ReplicationStatus {
   slotLagBytes: number;
   slotName?: string;
   slotActive?: boolean;
+  slotInitialLsn?: string;
   slotRestartLsn?: string;
   slotConfirmedFlushLsn?: string;
   slotWalStatus?: string;

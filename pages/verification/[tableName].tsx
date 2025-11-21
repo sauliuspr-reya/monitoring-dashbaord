@@ -164,9 +164,13 @@ export default function VerificationDetail() {
 
       const result = await response.json();
 
-      if (result.errors && result.errors.length > 0) {
+      if (result.errors > 0) {
+        const errorDetails = result.errorMessages && result.errorMessages.length > 0
+          ? `\n\nDetails:\n${result.errorMessages.join('\n')}`
+          : '';
+
         setGapActionError(
-          `Restored ${result.restored.toLocaleString()} gap(s), but encountered errors:\n${result.errors.join('\n')}`
+          `Restored ${result.restored.toLocaleString()} gap(s), but encountered ${result.errors} error(s).${errorDetails}`
         );
       } else {
         setGapActionMessage(

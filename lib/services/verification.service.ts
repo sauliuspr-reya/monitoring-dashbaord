@@ -800,12 +800,13 @@ export class VerificationService {
    * Restore missing gaps onto the target database
    * Reads gaps from table_verification_gaps and inserts them into target
    */
-  async restoreGaps(jobId: number, targetPool: Pool): Promise<{ restored: number; errors: number }> {
+  async restoreGaps(jobId: number, targetPool: Pool): Promise<{ restored: number; errors: number; errorMessages: string[] }> {
     // Get all gaps for the job (fetch in batches to avoid memory issues)
     const batchSize = 1000;
     let offset = 0;
     let restored = 0;
     let errors = 0;
+    const errorMessages: Set<string> = new Set();
 
     while (true) {
       const gaps = await this.getGaps(jobId, batchSize, offset);
@@ -836,16 +837,20 @@ export class VerificationService {
 
           await targetPool.query(query, values);
           restored++;
-        } catch (err) {
+        } catch (err: any) {
           console.error(`Failed to restore gap ${gap.id}:`, err);
           errors++;
+          // Collect unique error messages (limit to 10 to avoid huge payload)
+          if (errorMessages.size < 10) {
+            errorMessages.add(err.message || String(err));
+          }
         }
       }
 
       offset += batchSize;
     }
 
-    return { restored, errors };
+    return { restored, errors, errorMessages: Array.from(errorMessages) };
   }
 
   /**

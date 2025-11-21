@@ -27,9 +27,9 @@ export default async function handler(
 
         targetPool = createSourceTargetPool(targetUrl);
 
-        const result = await service.restoreGaps(Number(jobId), targetPool);
+        const { restored, errors, errorMessages } = await service.restoreGaps(Number(jobId), targetPool);
 
-        res.status(200).json(result);
+        res.status(200).json({ restored, errors, errorMessages });
     } catch (error: any) {
         console.error('Error restoring gaps:', error);
         res.status(500).json({ message: error.message || 'Internal server error' });
