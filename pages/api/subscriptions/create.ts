@@ -361,6 +361,11 @@ export default async function handler(
       // IMPORTANT: If using an existing slot (especially backup slots), we cannot create filtered publications
       // The slot is tied to a specific publication and we must use that exact publication
       const usingExistingSlot = manualSlotName && slotExists;
+      
+      // Also detect if we're using backup publications (which are tied to backup slots)
+      const usingBackupPublication = useExistingPublication && publicationNames.some(
+        (pubName: string) => pubName.startsWith('backup_pub_')
+      );
 
       // Step 5: Validate that tables exist on target database
       // PostgreSQL requires tables to exist on subscriber before creating subscription
@@ -510,8 +515,8 @@ export default async function handler(
       if (useExistingPublication) {
         // If customTables are provided, create a NEW publication with only selected tables
         // This allows filtering tables when using existing publications
-        // EXCEPT when using an existing slot - in that case we must use the original publication
-        if (customTables && customTables.length > 0 && !usingExistingSlot) {
+        // EXCEPT when using an existing slot OR backup publication - in those cases we must use the original publication
+        if (customTables && customTables.length > 0 && !usingExistingSlot && !usingBackupPublication) {
           // Create a new publication with only the selected tables
           const filteredPubName = `${subscriptionName}_filtered_publication`;
           const escapedFilteredPubName = filteredPubName.replace(/"/g, '""');
@@ -537,15 +542,17 @@ export default async function handler(
           finalPublicationName = filteredPubName;
           // Set tables to the filtered list
           tables = customTables;
-        } else if (usingExistingSlot && customTables && customTables.length > 0) {
-          // When using an existing slot, we CANNOT create a filtered publication
+        } else if ((usingExistingSlot || usingBackupPublication) && customTables && customTables.length > 0) {
+          // When using an existing slot or backup publication, we CANNOT create a filtered publication
           // because the slot is tied to the original publication
           await sourcePool.end();
           await targetPool.end();
           return res.status(400).json({
-            error: 'Cannot filter tables when using an existing replication slot',
-            details: 'The replication slot is tied to a specific publication. You must use all tables from that publication to maintain zero-data-loss restoration.',
-            hint: 'Either use all tables from the publication, or use the /api/subscriptions/create-from-backup endpoint for proper backup restoration.',
+            error: 'Cannot filter tables when using backup publications or existing replication slots',
+            details: usingBackupPublication 
+              ? 'Backup publications are tied to replication slots created during backup. You must use all tables from the backup publication to maintain zero-data-loss restoration.'
+              : 'The replication slot is tied to a specific publication. You must use all tables from that publication to maintain zero-data-loss restoration.',
+            hint: 'To restore from a backup: 1) Restore the backup to target, 2) Use /api/subscriptions/create-from-backup endpoint, or 3) Select all tables from the publication without filtering.',
             slot: slotName,
             publication: publicationNames[0],
           });

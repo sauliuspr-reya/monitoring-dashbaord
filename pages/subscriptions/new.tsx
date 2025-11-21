@@ -529,6 +529,26 @@ export default function NewSubscription() {
                           </div>
                         </div>
 
+                        {selectedPublications.length > 0 && selectedPublications.some(pub => pub.startsWith('backup_pub_')) && (
+                          <div className="mt-4 p-3 bg-yellow-50 border-2 border-yellow-400 rounded-lg">
+                            <div className="flex items-start">
+                              <span className="text-yellow-600 text-xl mr-2">⚠️</span>
+                              <div>
+                                <p className="text-sm font-semibold text-yellow-900 mb-1">
+                                  Backup Publication Detected
+                                </p>
+                                <p className="text-xs text-yellow-800">
+                                  You selected a backup publication (backup_pub_*). For zero-data-loss restoration, you <strong>MUST use ALL tables</strong> from this publication. 
+                                  Do not select individual tables below - leave the selection empty to use all tables.
+                                </p>
+                                <p className="text-xs text-yellow-700 mt-1">
+                                  The backup&apos;s replication slot is tied to this exact publication, and filtering tables will break the restoration.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
                         {selectedPublications.length > 0 && (
                           <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded">
                             <div className="text-sm font-medium text-gray-900 mb-3">
