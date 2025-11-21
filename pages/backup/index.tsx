@@ -287,6 +287,7 @@ export default function BackupPage() {
     excludeTables?: string[];
     schemaOnly: boolean;
     enableReplication: boolean;
+    name?: string;
   }) => {
     try {
       setBackingUp(true);
@@ -297,6 +298,11 @@ export default function BackupPage() {
         schemaOnly: options.schemaOnly,
         enableReplication: options.enableReplication,
       };
+
+      // Add custom backup name if provided
+      if (options.name) {
+        requestBody.name = options.name;
+      }
 
       if (options.excludeTables && options.excludeTables.length > 0) {
         requestBody.excludeTables = options.excludeTables;
