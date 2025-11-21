@@ -76,19 +76,29 @@ export default async function handler(
     // Don't enable replication for schema-only backups
     const effectiveReplication = enableReplication && !schemaOnly;
 
-    if (effectiveReplication) {
-      // Generate names
-      const timestamp = Date.now();
-      publicationName = `backup_pub_${timestamp}`;
-      slotName = `backup_slot_${timestamp}`;
-    }
-
     // Generate filename from name or timestamp
     let filename: string | undefined;
+    let sanitizedName: string | undefined;
+    
     if (name && name.trim()) {
-      const sanitizedName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+      sanitizedName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
       const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
       filename = `${sanitizedName}_${timestamp}`;
+    }
+
+    if (effectiveReplication) {
+      // Generate names using custom name or timestamp
+      if (sanitizedName) {
+        // Use custom name for publication and slot
+        const timestamp = Date.now();
+        publicationName = `backup_pub_${sanitizedName}_${timestamp}`;
+        slotName = `backup_slot_${sanitizedName}_${timestamp}`;
+      } else {
+        // Fallback to timestamp only
+        const timestamp = Date.now();
+        publicationName = `backup_pub_${timestamp}`;
+        slotName = `backup_slot_${timestamp}`;
+      }
     }
 
     // Create backup task

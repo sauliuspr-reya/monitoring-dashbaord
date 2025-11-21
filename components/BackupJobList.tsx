@@ -167,16 +167,25 @@ export default function BackupJobList({
                             {task.status.toUpperCase()}
                           </span>
                           <span className="text-sm font-medium text-gray-900">
-                            {task.task_type === 'backup' ? 'Backup' : 'Restore'}
-                            {task.schema_only && ' (Schema Only)'}
-                            {isSnapshot && ' • With Replication'}
+                            {task.filename ? (
+                              // Show custom name if available
+                              <>
+                                {task.filename}
+                                {task.schema_only && ' (Schema Only)'}
+                                {isSnapshot && ' • With Replication'}
+                              </>
+                            ) : (
+                              // Fallback to generic name
+                              <>
+                                {task.task_type === 'backup' ? 'Backup' : 'Restore'}
+                                {task.schema_only && ' (Schema Only)'}
+                                {isSnapshot && ' • With Replication'}
+                              </>
+                            )}
                           </span>
                         </div>
                         <div className="mt-1 flex items-center space-x-4 text-xs text-gray-500">
                           <span>ID: <span className="font-mono">{task.id.substring(0, 8)}...</span></span>
-                          {task.filename && (
-                            <span className="font-mono truncate max-w-xs">{task.filename}</span>
-                          )}
                           {task.file_size && (
                             <span>{formatBytes(task.file_size)}</span>
                           )}

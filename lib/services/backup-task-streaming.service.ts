@@ -76,9 +76,16 @@ export class BackupTaskStreamingService extends BackupTaskService {
 
       const conn = this.parseConnectionString(connectionString);
 
-      // Generate filename using task ID
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      const filename = `backup_${timestamp}_${taskId}.sql`;
+      // Use custom filename if provided, otherwise generate with timestamp
+      let filename: string;
+      if (task.filename && task.filename.trim()) {
+        // Custom name provided - use it
+        filename = `${task.filename}.sql`;
+      } else {
+        // Generate filename using timestamp and task ID
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        filename = `backup_${timestamp}_${taskId.substring(0, 8)}.sql`;
+      }
       const filepath = path.join(backupDir, filename);
 
       await this.updateTask(taskId, {
