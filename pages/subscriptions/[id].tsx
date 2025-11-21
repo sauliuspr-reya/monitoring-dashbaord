@@ -156,7 +156,10 @@ export default function SubscriptionDetails() {
       const res = await fetch('/api/debug/peek-slot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slotName: subscription.slotName }),
+        body: JSON.stringify({
+          slotName: subscription.slotName,
+          publicationName: subscription.publicationName // Pass publication name for pgoutput
+        }),
       });
 
       const data = await res.json();
@@ -492,6 +495,36 @@ export default function SubscriptionDetails() {
 
                   {debugResult && (
                     <div>
+                      {/* Slot Details Header */}
+                      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-4">
+                        <h4 className="text-sm font-semibold text-gray-800 mb-2">Slot Status</h4>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <div className="text-gray-500">Restart LSN</div>
+                            <div className="font-mono text-gray-900">{debugResult.restart_lsn || '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-gray-500">Confirmed Flush LSN</div>
+                            <div className="font-mono text-gray-900">{debugResult.confirmed_flush_lsn || '—'}</div>
+                          </div>
+                          <div>
+                            <div className="text-gray-500">Plugin</div>
+                            <div className="text-gray-900">{debugResult.plugin}</div>
+                          </div>
+                          <div>
+                            <div className="text-gray-500">Active</div>
+                            <div className={debugResult.active ? 'text-green-600' : 'text-gray-600'}>
+                              {debugResult.active ? 'Yes' : 'No'}
+                            </div>
+                          </div>
+                        </div>
+                        {debugResult.message && (
+                          <div className="mt-2 text-xs text-amber-600 italic">
+                            {debugResult.message}
+                          </div>
+                        )}
+                      </div>
+
                       <div className="flex justify-between items-center mb-2">
                         <h4 className="font-medium text-gray-900">
                           Pending Changes ({debugResult.count})
@@ -503,7 +536,7 @@ export default function SubscriptionDetails() {
 
                       {debugResult.changes.length === 0 ? (
                         <div className="text-gray-500 italic p-4 border border-gray-200 rounded bg-gray-50 text-center">
-                          No pending changes found in slot. It is up to date.
+                          No pending changes found in slot (or cannot decode).
                         </div>
                       ) : (
                         <div className="bg-gray-900 rounded-lg overflow-hidden">

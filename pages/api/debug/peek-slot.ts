@@ -10,7 +10,7 @@ export default async function handler(
         return res.status(405).json({ error: `Method ${req.method} not allowed` });
     }
 
-    const { slotName, limit = 10 } = req.body;
+    const { slotName, publicationName, limit = 10 } = req.body;
 
     if (!slotName) {
         return res.status(400).json({ error: 'Slot name is required' });
@@ -52,32 +52,79 @@ export default async function handler(
 
         sourcePool = createSourceTargetPool(connectionString);
 
-        // Check if slot is active
+        // Check if slot exists and get details
         const slotCheck = await sourcePool.query(`
-      SELECT active, active_pid FROM pg_replication_slots WHERE slot_name = $1
+      SELECT slot_name, plugin, slot_type, active, active_pid, restart_lsn, confirmed_flush_lsn 
+      FROM pg_replication_slots 
+      WHERE slot_name = $1
     `, [slotName]);
 
         if (slotCheck.rows.length === 0) {
             return res.status(404).json({ error: `Slot '${slotName}' not found on source database` });
         }
 
-        if (slotCheck.rows[0].active) {
+        const slot = slotCheck.rows[0];
+
+        if (slot.active) {
             return res.status(409).json({
-                error: `Slot '${slotName}' is currently ACTIVE (PID: ${slotCheck.rows[0].active_pid}). You cannot peek at an active slot. Stop the subscription first.`
+                error: `Slot '${slotName}' is currently ACTIVE (PID: ${slot.active_pid}). You cannot peek at an active slot. Stop the subscription first.`,
+                slot: slot
             });
         }
 
-        // Peek changes
-        // pg_logical_slot_peek_changes(slot_name, up_to_lsn, upto_nchanges, options VARIADIC text[])
-        const peekResult = await sourcePool.query(`
-      SELECT * FROM pg_logical_slot_peek_changes($1, NULL, $2)
-    `, [slotName, limit]);
+        let changes = [];
+
+        // Handle pgoutput plugin which requires options
+        if (slot.plugin === 'pgoutput') {
+            if (!publicationName) {
+                // If no publication provided, we can't peek pgoutput
+                // But we can still return the slot details which is valuable
+                return res.status(200).json({
+                    slot: slot.slot_name,
+                    plugin: slot.plugin,
+                    active: false,
+                    restart_lsn: slot.restart_lsn,
+                    confirmed_flush_lsn: slot.confirmed_flush_lsn,
+                    count: 0,
+                    changes: [],
+                    message: 'Cannot peek changes for pgoutput plugin without a publication name. Slot details returned.'
+                });
+            }
+
+            // Peek binary changes for pgoutput
+            // Note: pg_logical_slot_peek_binary_changes returns bytea data. 
+            // We might not be able to decode it easily to text, but we can show the LSNs.
+            // Actually, let's try peek_changes first, sometimes it works if we pass proto_version
+            try {
+                const peekResult = await sourcePool.query(`
+          SELECT * FROM pg_logical_slot_peek_binary_changes($1, NULL, $2, 'proto_version', '1', 'publication_names', $3)
+        `, [slotName, limit, publicationName]);
+
+                changes = peekResult.rows.map(row => ({
+                    lsn: row.lsn,
+                    xid: row.xid,
+                    data: '[Binary Data] (pgoutput)' // We can't easily decode binary pgoutput here without a parser
+                }));
+            } catch (err: any) {
+                console.warn('Failed to peek pgoutput changes:', err);
+                // Fallback to just returning slot details
+            }
+        } else {
+            // Default for test_decoding or wal2json
+            const peekResult = await sourcePool.query(`
+        SELECT * FROM pg_logical_slot_peek_changes($1, NULL, $2)
+      `, [slotName, limit]);
+            changes = peekResult.rows;
+        }
 
         res.status(200).json({
-            slot: slotName,
+            slot: slot.slot_name,
+            plugin: slot.plugin,
             active: false,
-            count: peekResult.rows.length,
-            changes: peekResult.rows
+            restart_lsn: slot.restart_lsn,
+            confirmed_flush_lsn: slot.confirmed_flush_lsn,
+            count: changes.length,
+            changes: changes
         });
 
     } catch (error: any) {
