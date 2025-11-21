@@ -311,17 +311,32 @@ export default function NewSubscription() {
         setCreating(false);
         return;
       }
+    } else {
+      // When using existing publications (not backup publications), require table selection
+      const isUsingBackupPublication = selectedPublications.some(pub => pub.startsWith('backup_pub_'));
+      if (!isUsingBackupPublication && selectedTablesFromPub.size === 0) {
+        setError('Please select at least one table from the publications');
+        setCreating(false);
+        return;
+      }
     }
 
     try {
+      // Detect if any selected publication is a backup publication
+      const isUsingBackupPublication = useExistingPublication && selectedPublications.some(
+        pub => pub.startsWith('backup_pub_')
+      );
+
       const res = await fetch('/api/subscriptions/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name,
           description,
+          // IMPORTANT: If using backup publication, don't send customTables at all
+          // This allows backend to use the publication as-is without triggering filtering check
           customTables: useExistingPublication
-            ? Array.from(selectedTablesFromPub)
+            ? (isUsingBackupPublication ? undefined : Array.from(selectedTablesFromPub))
             : (!excludeMode ? selectedTables : undefined),
           excludeTables: useExistingPublication
             ? undefined
@@ -530,26 +545,25 @@ export default function NewSubscription() {
                         </div>
 
                         {selectedPublications.length > 0 && selectedPublications.some(pub => pub.startsWith('backup_pub_')) && (
-                          <div className="mt-4 p-3 bg-yellow-50 border-2 border-yellow-400 rounded-lg">
+                          <div className="mt-4 p-3 bg-green-50 border-2 border-green-400 rounded-lg">
                             <div className="flex items-start">
-                              <span className="text-yellow-600 text-xl mr-2">⚠️</span>
+                              <span className="text-green-600 text-xl mr-2">✅</span>
                               <div>
-                                <p className="text-sm font-semibold text-yellow-900 mb-1">
-                                  Backup Publication Detected
+                                <p className="text-sm font-semibold text-green-900 mb-1">
+                                  Backup Publication Detected - All Tables Will Be Used
                                 </p>
-                                <p className="text-xs text-yellow-800">
-                                  You selected a backup publication (backup_pub_*). For zero-data-loss restoration, you <strong>MUST use ALL tables</strong> from this publication. 
-                                  Do not select individual tables below - leave the selection empty to use all tables.
+                                <p className="text-xs text-green-800">
+                                  You selected a backup publication (backup_pub_*). All tables from this publication will be automatically included in the subscription for zero-data-loss restoration.
                                 </p>
-                                <p className="text-xs text-yellow-700 mt-1">
-                                  The backup&apos;s replication slot is tied to this exact publication, and filtering tables will break the restoration.
+                                <p className="text-xs text-green-700 mt-1">
+                                  The backup&apos;s replication slot is tied to this exact publication. Table filtering is disabled to maintain data integrity.
                                 </p>
                               </div>
                             </div>
                           </div>
                         )}
 
-                        {selectedPublications.length > 0 && (
+                        {selectedPublications.length > 0 && !selectedPublications.some(pub => pub.startsWith('backup_pub_')) && (
                           <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded">
                             <div className="text-sm font-medium text-gray-900 mb-3">
                               Select Tables from Selected Publications ({selectedTablesFromPub.size} selected):
@@ -1060,7 +1074,16 @@ export default function NewSubscription() {
               </Link>
               <button
                 type="submit"
-                disabled={creating || (!useExistingPublication && selectedTables.length === 0) || (useExistingPublication && (selectedPublications.length === 0 || selectedTablesFromPub.size === 0)) || !name}
+                disabled={
+                  creating || 
+                  (!useExistingPublication && selectedTables.length === 0) || 
+                  (useExistingPublication && (
+                    selectedPublications.length === 0 || 
+                    // Allow empty table selection if using backup publications (they use all tables automatically)
+                    (!selectedPublications.some(pub => pub.startsWith('backup_pub_')) && selectedTablesFromPub.size === 0)
+                  )) || 
+                  !name
+                }
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 {creating ? 'Creating...' : 'Create Subscription'}
