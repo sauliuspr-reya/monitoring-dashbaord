@@ -985,9 +985,22 @@ export default function NewSubscription() {
                       placeholder="e.g., backup_slot_123456789"
                     />
                     {manualSlotName.startsWith('backup_slot_') ? (
-                      <p className="mt-1 text-xs text-green-600 font-medium">
-                        ✅ Backup slot detected. Replication will resume exactly from the backup point (zero data loss).
-                      </p>
+                      <div className="mt-2">
+                        <p className="text-xs text-green-600 font-medium">
+                          ✅ Backup slot detected. Replication will resume exactly from the backup point (zero data loss).
+                        </p>
+                        {useExistingPublication && selectedTablesFromPub.size > 0 && (
+                          <div className="mt-2 p-2 bg-yellow-50 border border-yellow-300 rounded">
+                            <p className="text-xs text-yellow-800 font-medium">
+                              ⚠️ Important: When using an existing backup slot, you must use ALL tables from the original publication.
+                              Table filtering is not supported because the slot is tied to the specific publication created during backup.
+                            </p>
+                            <p className="text-xs text-yellow-700 mt-1">
+                              Either select all tables from the publication, or leave table selection empty to use all tables.
+                            </p>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <p className="mt-1 text-xs text-gray-500">
                         If you created a consistent backup with a replication slot, enter that slot name here.

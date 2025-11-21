@@ -358,6 +358,10 @@ export default async function handler(
         console.warn(`Replication slot '${slotName}' already exists on source. Will use existing slot.`);
       }
 
+      // IMPORTANT: If using an existing slot (especially backup slots), we cannot create filtered publications
+      // The slot is tied to a specific publication and we must use that exact publication
+      const usingExistingSlot = manualSlotName && slotExists;
+
       // Step 5: Validate that tables exist on target database
       // PostgreSQL requires tables to exist on subscriber before creating subscription
       let tablesToCheck: string[] = [];
@@ -506,7 +510,8 @@ export default async function handler(
       if (useExistingPublication) {
         // If customTables are provided, create a NEW publication with only selected tables
         // This allows filtering tables when using existing publications
-        if (customTables && customTables.length > 0) {
+        // EXCEPT when using an existing slot - in that case we must use the original publication
+        if (customTables && customTables.length > 0 && !usingExistingSlot) {
           // Create a new publication with only the selected tables
           const filteredPubName = `${subscriptionName}_filtered_publication`;
           const escapedFilteredPubName = filteredPubName.replace(/"/g, '""');
@@ -532,6 +537,18 @@ export default async function handler(
           finalPublicationName = filteredPubName;
           // Set tables to the filtered list
           tables = customTables;
+        } else if (usingExistingSlot && customTables && customTables.length > 0) {
+          // When using an existing slot, we CANNOT create a filtered publication
+          // because the slot is tied to the original publication
+          await sourcePool.end();
+          await targetPool.end();
+          return res.status(400).json({
+            error: 'Cannot filter tables when using an existing replication slot',
+            details: 'The replication slot is tied to a specific publication. You must use all tables from that publication to maintain zero-data-loss restoration.',
+            hint: 'Either use all tables from the publication, or use the /api/subscriptions/create-from-backup endpoint for proper backup restoration.',
+            slot: slotName,
+            publication: publicationNames[0],
+          });
         } else {
           // No customTables - use existing publications as-is
           const escapedPubNames = publicationNames.map((pubName: string) =>
