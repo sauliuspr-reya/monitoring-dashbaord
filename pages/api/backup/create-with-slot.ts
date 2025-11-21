@@ -79,20 +79,28 @@ export default async function handler(
     // Generate filename from name or timestamp
     let filename: string | undefined;
     let sanitizedName: string | undefined;
+    let sanitizedNameForSlot: string | undefined;
     
     if (name && name.trim()) {
+      // For filenames: allow hyphens (filesystem-safe)
+      // Use the name as-is (frontend already adds timestamp if needed)
       sanitizedName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
-      const timestamp = new Date().toISOString().split('T')[0].replace(/-/g, '');
-      filename = `${sanitizedName}_${timestamp}`;
+      filename = sanitizedName;
+      
+      // For slot/publication names: PostgreSQL requires lowercase letters, numbers, and underscores only
+      // Replace hyphens with underscores and convert to lowercase
+      if (sanitizedName) {
+        sanitizedNameForSlot = sanitizedName.replace(/-/g, '_').toLowerCase();
+      }
     }
 
     if (effectiveReplication) {
       // Generate names using custom name or timestamp
-      if (sanitizedName) {
-        // Use custom name for publication and slot
+      if (sanitizedNameForSlot) {
+        // Use custom name for publication and slot (PostgreSQL-safe)
         const timestamp = Date.now();
-        publicationName = `backup_pub_${sanitizedName}_${timestamp}`;
-        slotName = `backup_slot_${sanitizedName}_${timestamp}`;
+        publicationName = `backup_pub_${sanitizedNameForSlot}_${timestamp}`;
+        slotName = `backup_slot_${sanitizedNameForSlot}_${timestamp}`;
       } else {
         // Fallback to timestamp only
         const timestamp = Date.now();
