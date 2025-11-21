@@ -45,6 +45,21 @@ export default function NewSubscription() {
     loadPublications();
   }, []);
 
+  // Auto-detect backup slot from publication name
+  useEffect(() => {
+    if (selectedPublications.length === 1) {
+      const pubName = selectedPublications[0];
+      // Check if it matches backup_pub_{timestamp} pattern
+      const match = pubName.match(/^backup_pub_(\d+)$/);
+      if (match) {
+        const timestamp = match[1];
+        const suggestedSlot = `backup_slot_${timestamp}`;
+        setManualSlotName(suggestedSlot);
+        setShowAdvanced(true);
+      }
+    }
+  }, [selectedPublications]);
+
   const loadPublications = async () => {
     try {
       setLoadingPublications(true);
@@ -969,10 +984,16 @@ export default function NewSubscription() {
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
                       placeholder="e.g., backup_slot_123456789"
                     />
-                    <p className="mt-1 text-xs text-gray-500">
-                      If you created a consistent backup with a replication slot, enter that slot name here.
-                      This ensures zero data loss by resuming replication exactly from the backup point.
-                    </p>
+                    {manualSlotName.startsWith('backup_slot_') ? (
+                      <p className="mt-1 text-xs text-green-600 font-medium">
+                        ✅ Backup slot detected. Replication will resume exactly from the backup point (zero data loss).
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs text-gray-500">
+                        If you created a consistent backup with a replication slot, enter that slot name here.
+                        This ensures zero data loss by resuming replication exactly from the backup point.
+                      </p>
+                    )}
                   </div>
 
                   {!useExistingPublication && (
