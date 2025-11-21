@@ -162,7 +162,8 @@ export default function SubscriptionDetails() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to peek slot');
+        const errorMessage = data.details ? `${data.error}: ${data.details}` : (data.error || 'Failed to peek slot');
+        throw new Error(errorMessage);
       }
 
       setDebugResult(data);
@@ -396,8 +397,8 @@ export default function SubscriptionDetails() {
                   onClick={() => handleToggle(!subscription.enabled)}
                   disabled={toggling}
                   className={`px-4 py-2 rounded-md text-sm font-medium ${subscription.enabled
-                      ? 'bg-yellow-600 text-white hover:bg-yellow-700'
-                      : 'bg-green-600 text-white hover:bg-green-700'
+                    ? 'bg-yellow-600 text-white hover:bg-yellow-700'
+                    : 'bg-green-600 text-white hover:bg-green-700'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                   {toggling ? '...' : subscription.enabled ? 'Disable' : 'Enable'}
