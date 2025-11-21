@@ -14,7 +14,7 @@ export default async function handler(
   const { 
     dropSubscription = true,
     dropPublication = false,
-    dropSlot = false,
+    dropSlot = true,  // Changed to true to prevent orphaned slots from causing replication lag
   } = req.body || {};
 
   try {
@@ -50,8 +50,11 @@ export default async function handler(
       if (dropSubscription) {
         try {
           const escapedSubName = subscriptionName.replace(/"/g, '""');
-          await targetPool.query(`DROP SUBSCRIPTION IF EXISTS "${escapedSubName}"`);
+          // Use CASCADE to ensure slot is dropped on source if possible
+          // This should automatically drop the replication slot on the source database
+          await targetPool.query(`DROP SUBSCRIPTION IF EXISTS "${escapedSubName}" CASCADE`);
           results.subscriptionDropped = true;
+          console.log(`Dropped subscription '${subscriptionName}' (should auto-drop slot '${slotName}' on source)`);
         } catch (error: any) {
           results.errors.push(`Failed to drop subscription: ${error.message}`);
         }
@@ -68,30 +71,51 @@ export default async function handler(
         }
       }
 
-      // Step 3: Drop replication slot on source (optional, usually dropped with subscription)
+      // Step 3: Drop replication slot on source (if it still exists after DROP SUBSCRIPTION)
       if (dropSlot && slotName) {
         try {
-          // Check slot lag before dropping (warning only)
+          // Check if slot still exists (it should have been dropped by DROP SUBSCRIPTION CASCADE)
           const slotInfo = await sourcePool.query(`
             SELECT 
               active,
-              pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as lag_bytes
+              pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) as lag_bytes,
+              pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) as lag_pretty
             FROM pg_replication_slots
             WHERE slot_name = $1
           `, [slotName]);
           
           if (slotInfo.rows.length > 0) {
             const lagBytes = parseInt(slotInfo.rows[0].lag_bytes || '0', 10);
+            const lagPretty = slotInfo.rows[0].lag_pretty;
+            const isActive = slotInfo.rows[0].active;
+            
             if (lagBytes > 1073741824) { // > 1GB
-              console.warn(`Warning: Slot '${slotName}' has ${(lagBytes / 1024 / 1024 / 1024).toFixed(2)}GB of WAL lag`);
+              console.warn(`Warning: Slot '${slotName}' has ${lagPretty} of WAL lag before dropping`);
             }
+            
+            if (isActive) {
+              console.warn(`Warning: Slot '${slotName}' is still active! Attempting to drop anyway...`);
+            }
+            
+            // Slot still exists, drop it manually
+            const escapedSlotName = slotName.replace(/'/g, "''");
+            await sourcePool.query(`SELECT pg_drop_replication_slot('${escapedSlotName}')`);
+            results.slotDropped = true;
+            console.log(`Manually dropped replication slot '${slotName}' on source (${lagPretty} lag)`);
+          } else {
+            // Slot was already dropped (good - DROP SUBSCRIPTION CASCADE worked)
+            results.slotDropped = true;
+            console.log(`Replication slot '${slotName}' was already dropped by DROP SUBSCRIPTION CASCADE (good!)`);
           }
-          
-          const escapedSlotName = slotName.replace(/'/g, "''");
-          await sourcePool.query(`SELECT pg_drop_replication_slot('${escapedSlotName}')`);
-          results.slotDropped = true;
         } catch (error: any) {
-          results.errors.push(`Failed to drop slot: ${error.message}`);
+          // If error is "replication slot does not exist", that's actually OK
+          if (error.message.includes('does not exist')) {
+            results.slotDropped = true;
+            console.log(`Replication slot '${slotName}' already deleted (expected)`);
+          } else {
+            results.errors.push(`Failed to drop slot: ${error.message}`);
+            console.error(`Error dropping slot '${slotName}':`, error.message);
+          }
         }
       }
 
