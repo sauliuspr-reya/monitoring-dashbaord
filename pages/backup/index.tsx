@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import BackupJobList from '@/components/BackupJobList';
 import CompletedBackupsList from '@/components/CompletedBackupsList';
@@ -83,6 +84,28 @@ export default function BackupPage() {
     loadBackups();
     loadBackupTasks();
   }, []);
+
+  // Handle query parameters for pre-selecting tables from services page
+  useEffect(() => {
+    if (router.isReady && router.query.service && router.query.tables) {
+      const service = router.query.service as string;
+      const tablesParam = router.query.tables as string;
+      const tableList = tablesParam.split(',').filter(Boolean);
+      
+      if (tableList.length > 0) {
+        // Open backup modal with pre-selected tables
+        setBackupModalInitialState({
+          tables: tableList,
+          enableReplication: true,
+        });
+        setShowBackupModal(true);
+        
+        // Clear query parameters
+        router.replace('/backup', undefined, { shallow: true });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady, router.query]);
 
   useEffect(() => {
     // Refresh tasks every 30 seconds if there are running or pending tasks (both backup and restore)
@@ -379,8 +402,17 @@ export default function BackupPage() {
             <div className="flex justify-between items-center">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">Backup & Restore</h1>
+                <p className="mt-2 text-sm text-gray-600">
+                  Manage database backups, restores, and service-based batch operations
+                </p>
               </div>
               <div className="flex gap-3">
+                <Link
+                  href="/backup/service-groups"
+                  className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 font-medium flex items-center gap-2"
+                >
+                  📦 Service Groups
+                </Link>
                 <button
                   onClick={() => {
                     setBackupModalInitialState(null);

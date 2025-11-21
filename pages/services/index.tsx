@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/router';
 import Navbar from '@/components/Navbar';
 import Link from 'next/link';
 
@@ -27,6 +28,7 @@ interface ServiceWriteStatsWithLocation extends ServiceWriteStats {
 }
 
 export default function ServicesPage() {
+  const router = useRouter();
   const [writeStats, setWriteStats] = useState<ServiceWriteStatsWithLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [hours, setHours] = useState<number>(2);
@@ -420,6 +422,28 @@ export default function ServicesPage() {
                         )}
                       </div>
                     )}
+                    
+                    {/* Action Buttons */}
+                    <div className="mb-4 flex gap-3">
+                      <button
+                        onClick={() => {
+                          const tables = summary.stats.map(s => s.table);
+                          router.push(`/backup?service=${encodeURIComponent(summary.serviceName)}&tables=${encodeURIComponent(tables.join(','))}`);
+                        }}
+                        className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 font-medium flex items-center gap-2"
+                      >
+                        📦 Create Backup for this Service
+                      </button>
+                      <button
+                        onClick={() => {
+                          const tables = summary.stats.map(s => s.table);
+                          router.push(`/subscriptions/new?service=${encodeURIComponent(summary.serviceName)}&tables=${encodeURIComponent(tables.join(','))}`);
+                        }}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-medium flex items-center gap-2"
+                      >
+                        🔄 Create Subscription for this Service
+                      </button>
+                    </div>
                     
                     <div className="overflow-x-auto">
                       <table className="min-w-full divide-y divide-gray-200">

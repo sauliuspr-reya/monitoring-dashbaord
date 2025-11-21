@@ -406,6 +406,23 @@ export default function NewSubscription() {
             </p>
           </div>
 
+          {/* Service Pre-Selection Banner */}
+          {router.query.service && router.query.tables && (
+            <div className="mb-6 bg-purple-50 border border-purple-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <span className="text-purple-600 text-xl">📦</span>
+                <div>
+                  <p className="text-sm font-semibold text-purple-900 mb-1">
+                    Tables Pre-Selected from Service: {router.query.service}
+                  </p>
+                  <p className="text-xs text-purple-800">
+                    {selectedTables.length} table(s) have been automatically selected for subscription from this service.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
               <div className="text-red-800 font-medium">Error</div>
