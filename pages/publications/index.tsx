@@ -15,6 +15,8 @@ interface Publication {
   subscriptions?: string[]; // Subscriptions using this publication
   taskId?: string | null; // Backup task ID that created this publication
   createdAt?: string | null; // When publication was created
+  owner?: string; // Publication owner
+  viaRoot?: boolean; // publish_via_partition_root
 }
 
 export default function PublicationsPage() {
@@ -47,7 +49,7 @@ export default function PublicationsPage() {
         throw new Error(data.error || 'Failed to load publications');
       }
       const data = await res.json();
-      
+
       // Also get subscriptions that use each publication
       const publicationsWithSubs = await Promise.all(
         data.publications.map(async (pub: Publication) => {
@@ -67,7 +69,7 @@ export default function PublicationsPage() {
           return { ...pub, subscriptions: [] };
         })
       );
-      
+
       setPublications(publicationsWithSubs);
     } catch (err: any) {
       setError(err.message);
@@ -322,6 +324,12 @@ export default function PublicationsPage() {
                       Tables
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Owner
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Options
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Created
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -381,6 +389,16 @@ export default function PublicationsPage() {
                             </div>
                           )}
                         </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {pub.owner || '—'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {pub.viaRoot !== undefined && (
+                          <span className={`px-2 py-1 rounded text-xs ${pub.viaRoot ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-600'}`}>
+                            via_root: {pub.viaRoot ? 'true' : 'false'}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-sm text-gray-600">

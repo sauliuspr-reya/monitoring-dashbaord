@@ -14,8 +14,8 @@ export default async function handler(
     const { sourceDbConnection } = req.query;
 
     // Use provided connection or fall back to environment variable
-    const finalSourceConnection = (sourceDbConnection && typeof sourceDbConnection === 'string' && sourceDbConnection.trim() !== '') 
-      ? sourceDbConnection 
+    const finalSourceConnection = (sourceDbConnection && typeof sourceDbConnection === 'string' && sourceDbConnection.trim() !== '')
+      ? sourceDbConnection
       : (process.env.SOURCE_DATABASE_URL || '');
 
     if (!finalSourceConnection || finalSourceConnection.trim() === '') {
@@ -31,14 +31,17 @@ export default async function handler(
       // Get all publications
       const publicationsResult = await sourcePool.query(`
         SELECT 
-          pubname AS name,
-          puballtables AS all_tables,
-          pubinsert AS insert_enabled,
-          pubupdate AS update_enabled,
-          pubdelete AS delete_enabled,
-          pubtruncate AS truncate_enabled
-        FROM pg_publication
-        ORDER BY pubname
+          p.pubname AS name,
+          p.puballtables AS all_tables,
+          p.pubinsert AS insert_enabled,
+          p.pubupdate AS update_enabled,
+          p.pubdelete AS delete_enabled,
+          p.pubtruncate AS truncate_enabled,
+          p.pubviaroot AS via_root,
+          r.rolname AS owner
+        FROM pg_publication p
+        JOIN pg_roles r ON p.pubowner = r.oid
+        ORDER BY p.pubname
       `);
 
       if (publicationsResult.rows.length === 0) {
@@ -52,7 +55,7 @@ export default async function handler(
       const publications = await Promise.all(
         publicationsResult.rows.map(async (pub) => {
           let tables: string[] = [];
-          
+
           if (pub.all_tables) {
             // If publication is for all tables, get all tables from the database
             const allTablesResult = await sourcePool.query(`
@@ -84,7 +87,7 @@ export default async function handler(
               ORDER BY created_at DESC
               LIMIT 1
             `, [pub.name]);
-            
+
             if (taskResult.rows.length > 0) {
               taskId = taskResult.rows[0].id;
               createdAt = taskResult.rows[0].created_at;
@@ -101,6 +104,8 @@ export default async function handler(
             updateEnabled: pub.update_enabled,
             deleteEnabled: pub.delete_enabled,
             truncateEnabled: pub.truncate_enabled,
+            viaRoot: pub.via_root,
+            owner: pub.owner,
             tables,
             tableCount: tables.length,
             taskId,
