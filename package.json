@@ -1,6 +1,6 @@
 {
   "name": "replication-monitoring-dashboard",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "private": true,
   "scripts": {
     "dev": "next dev -p ${PORT:-3000}",
