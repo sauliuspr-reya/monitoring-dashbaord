@@ -18,30 +18,10 @@ This application is deployed via Helm and ArgoCD using the `nextjs-app` chart.
 
 ### Docker Build and Push
 
-**Quick build and push (amd64):**
-```bash
-./scripts/build-and-push.sh [version]
-# Example: ./scripts/build-and-push.sh v1.0.0
-# Builds for linux/amd64 by default
-```
-
-**Or using Make:**
+**Using Make:**
 ```bash
 make build-push VERSION=v1.0.0
 # Or: make build-push  # Uses 'latest' tag
-# Builds for linux/amd64 by default
-```
-
-**Build for different architecture:**
-```bash
-# For amd64 (default)
-./scripts/build-and-push.sh v1.0.0 linux/amd64
-
-# For arm64
-./scripts/build-and-push.sh v1.0.0 linux/arm64
-
-# Using Make
-make build-push VERSION=v1.0.0 PLATFORM=linux/amd64
 ```
 
 **Manual steps:**
@@ -81,9 +61,6 @@ Configure via External Secrets or Helm values:
 
 The application requires a PVC mounted at `/backup` for storing database backups.
 
-See [DEPLOYMENT-PVC.md](./DEPLOYMENT-PVC.md) for detailed PVC configuration.
-
-**Quick reference:**
 - Mount point: `/backup`
 - Recommended size: 100Gi
 - Access mode: `ReadWriteOnce`
@@ -115,5 +92,3 @@ npm run dev
 ## License
 
 Private - Reya Labs
-
-# monitoring-dashbaord

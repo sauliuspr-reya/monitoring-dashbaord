@@ -710,7 +710,7 @@ export default function VerificationDetail() {
             ) : (
               <div className="p-6 bg-yellow-50 border border-yellow-200 rounded">
                 <p className="text-sm text-yellow-800">
-                  Unable to detect a timestamp column automatically. Run <code>scripts/analyze-table-timestamps.sh</code> to identify candidates.
+                  Unable to detect a timestamp column automatically. This table may not have a timestamp column for timeline analysis.
                 </p>
               </div>
             )}
