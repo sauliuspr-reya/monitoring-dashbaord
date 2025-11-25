@@ -13,6 +13,14 @@ export default function SubscriptionsPage() {
   const [modalTables, setModalTables] = useState<any[]>([]);
   const [loadingTables, setLoadingTables] = useState(false);
   const [tableError, setTableError] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [bulkDeleteOptions, setBulkDeleteOptions] = useState({
+    dropSubscription: true,
+    dropPublication: false,
+    dropSlot: false,
+  });
 
   useEffect(() => {
     loadData();
@@ -115,6 +123,42 @@ export default function SubscriptionsPage() {
     }
   };
 
+  // Filter groups by search
+  const filteredGroups = groups.filter(g => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      (g.subscriptionName || '').toLowerCase().includes(q) ||
+      (g.groupName || '').toLowerCase().includes(q)
+    );
+  });
+
+  // Summary stats
+  const summary = {
+    total: groups.length,
+    active: groups.filter(g => g.status === 'active').length,
+    stopped: groups.filter(g => g.status === 'stopped' || !g.enabled).length,
+    errors: groups.filter(g => g.status === 'error' || (g.conflicts || 0) > 0).length,
+    totalLag: groups.reduce((sum, g) => sum + (g.lagBytes || 0), 0),
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredGroups.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredGroups.map(g => g.subscriptionId || '')));
+    }
+  };
+
   const handleDelete = async (groupId: string, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -158,30 +202,22 @@ export default function SubscriptionsPage() {
   };
 
   const handleBulkDelete = async () => {
-    if (groups.length === 0) {
-      alert('No subscriptions to delete');
+    if (selectedIds.size === 0) {
+      alert('No subscriptions selected');
       return;
     }
 
-    const count = groups.length;
-    if (!confirm(`Are you sure you want to delete ALL ${count} subscription(s)?\n\nThis will:\n- Drop all subscriptions on the target database\n- Remove them from monitoring\n\nThis action cannot be undone.`)) {
-      return;
-    }
-
+    setShowBulkDeleteModal(false);
+    setBulkToggling(true);
+    
     try {
-      setBulkToggling(true);
-      
-      const deletePromises = groups.map(async (group) => {
-        const groupId = group.subscriptionId || '';
+      const idsToDelete = Array.from(selectedIds);
+      const deletePromises = idsToDelete.map(async (groupId) => {
         try {
           const res = await fetch(`/api/subscriptions/${groupId}/delete`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              dropSubscription: true,
-              dropPublication: false,
-              dropSlot: false,
-            }),
+            body: JSON.stringify(bulkDeleteOptions),
           });
           
           if (res.ok) {
@@ -202,8 +238,6 @@ export default function SubscriptionsPage() {
       if (failCount > 0) {
         const errors = results.filter(r => !r.success).map(r => `- ${r.id}: ${r.error}`).join('\n');
         alert(`Deleted ${successCount} subscription(s).\n\nFailed to delete ${failCount}:\n${errors}`);
-      } else {
-        alert(`Successfully deleted all ${successCount} subscription(s)`);
       }
 
       // Close modal if open
@@ -211,7 +245,7 @@ export default function SubscriptionsPage() {
         closeModal();
       }
 
-      // Reload the list
+      setSelectedIds(new Set());
       await loadData();
     } catch (error: any) {
       alert(`Error: ${error.message || 'Failed to delete subscriptions'}`);
@@ -378,155 +412,226 @@ export default function SubscriptionsPage() {
       <Navbar />
       <div className="min-h-screen bg-gray-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex justify-between items-center mb-8">
+          {/* Header */}
+          <div className="mb-6 flex justify-between items-start">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Subscriptions</h1>
-              <p className="mt-2 text-gray-600">
-                Manage PostgreSQL logical replication subscriptions
-              </p>
+              <p className="mt-1 text-gray-600">Manage PostgreSQL logical replication subscriptions</p>
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-2">
               <button
                 onClick={() => handleBulkToggle(false)}
                 disabled={bulkToggling || groups.length === 0}
-                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Pause all replications (useful for backup/restore)"
+                className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50"
               >
-                {bulkToggling ? 'Pausing...' : 'Pause All'}
+                Pause All
               </button>
               <button
                 onClick={() => handleBulkToggle(true)}
                 disabled={bulkToggling || groups.length === 0}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Start all replications"
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
               >
-                {bulkToggling ? 'Starting...' : 'Start All'}
-              </button>
-              <button
-                onClick={handleBulkDelete}
-                disabled={bulkToggling || groups.length === 0}
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Delete all subscriptions"
-              >
-                {bulkToggling ? 'Deleting...' : 'Delete All'}
+                Start All
               </button>
               <Link
                 href="/subscriptions/new"
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
-                Create Subscription
+                + New Subscription
               </Link>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-6">
-            {groups.map((group) => {
+          {/* Summary Stats */}
+          <div className="mb-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="text-2xl font-bold text-gray-900">{summary.total}</div>
+              <div className="text-sm text-gray-500">Total</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="text-2xl font-bold text-green-600">{summary.active}</div>
+              <div className="text-sm text-gray-500">Active</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="text-2xl font-bold text-yellow-600">{summary.stopped}</div>
+              <div className="text-sm text-gray-500">Stopped</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="text-2xl font-bold text-red-600">{summary.errors}</div>
+              <div className="text-sm text-gray-500">Errors</div>
+            </div>
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="text-2xl font-bold text-blue-600">{formatBytes(summary.totalLag)}</div>
+              <div className="text-sm text-gray-500">Total Lag</div>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="mb-6 bg-white rounded-lg shadow p-4 flex flex-wrap gap-4 items-center justify-between">
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size > 0 && selectedIds.size === filteredGroups.length}
+                  onChange={toggleSelectAll}
+                  className="rounded"
+                />
+                Select All
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search subscriptions..."
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md w-64"
+              />
+              <button onClick={loadData} className="px-3 py-1.5 text-sm bg-gray-100 rounded-md hover:bg-gray-200">
+                ↻ Refresh
+              </button>
+            </div>
+          </div>
+
+          {/* Bulk Actions Bar */}
+          {selectedIds.size > 0 && (
+            <div className="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-blue-800">{selectedIds.size} subscription(s) selected</span>
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-sm text-blue-600 hover:text-blue-800"
+                >
+                  Clear
+                </button>
+              </div>
+              <button
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                Delete Selected
+              </button>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            {filteredGroups.map((group) => {
               const groupId = group.subscriptionId || '';
               const isToggling = toggling.has(groupId);
+              const borderColor = group.status === 'active' ? 'border-green-500' : 
+                                  group.status === 'error' || (group.conflicts || 0) > 0 ? 'border-red-500' : 
+                                  'border-yellow-500';
               
               return (
                 <div
                   key={groupId}
-                  className="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow"
+                  className={`bg-white rounded-lg shadow border-l-4 ${borderColor} overflow-hidden ${selectedIds.has(groupId) ? 'ring-2 ring-blue-500' : ''}`}
                 >
-                  <div className="flex justify-between items-start mb-4">
-                    <Link
-                      href={`/subscriptions/${groupId}`}
-                      className="flex-1"
-                    >
-                      <h3 className="text-lg font-semibold text-gray-900 hover:text-blue-600">
-                        {group.subscriptionName || group.groupName}
-                      </h3>
-                      <div className="mt-2">
-                        <span
-                          className={`px-3 py-1 rounded text-sm font-medium ${getStatusColor(
-                            group.status || 'stopped'
-                          )}`}
-                        >
-                          {(group.status || 'stopped').toUpperCase()}
-                        </span>
+                  {/* Header */}
+                  <div className="p-4 border-b border-gray-100">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(groupId)}
+                          onChange={() => toggleSelect(groupId)}
+                          className="rounded w-4 h-4"
+                        />
+                        <span className="text-xl">{group.status === 'active' ? '🔄' : group.status === 'error' ? '❌' : '⏸️'}</span>
+                        <div>
+                          <Link href={`/subscriptions/${groupId}`}>
+                            <h3 className="font-semibold text-gray-900 hover:text-blue-600">
+                              {group.subscriptionName || group.groupName}
+                            </h3>
+                          </Link>
+                          <div className="text-xs text-gray-500">
+                            {group.tableCount || 0} tables • {formatBytes(group.lagBytes || 0)} lag
+                          </div>
+                        </div>
                       </div>
-                    </Link>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right text-sm text-gray-600">
-                        <div>Enabled: {group.enabled ? 'Yes' : 'No'}</div>
-                        <div>Worker: {group.workerRunning ? 'Running' : 'Stopped'}</div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={(e) => handleToggle(groupId, !group.enabled, e)}
-                          disabled={isToggling || deleting.has(groupId)}
-                          className={`px-3 py-1.5 rounded text-sm font-medium ${
-                            group.enabled
-                              ? 'bg-yellow-600 text-white hover:bg-yellow-700'
-                              : 'bg-green-600 text-white hover:bg-green-700'
-                          } disabled:opacity-50 disabled:cursor-not-allowed`}
-                          title={group.enabled ? 'Disable subscription' : 'Enable subscription'}
-                        >
-                          {isToggling ? '...' : group.enabled ? 'Disable' : 'Enable'}
-                        </button>
-                        <button
-                          onClick={(e) => handleDelete(groupId, e)}
-                          disabled={isToggling || deleting.has(groupId)}
-                          className="px-3 py-1.5 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Delete subscription"
-                        >
-                          {deleting.has(groupId) ? '...' : 'Delete'}
-                        </button>
-                      </div>
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(group.status || 'stopped')}`}>
+                        {(group.status || 'stopped').toUpperCase()}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-xs text-gray-500 mb-1">Status</div>
-                      <div className="text-lg font-semibold">
-                        <span className={`px-2 py-1 rounded text-xs ${getStatusColor(group.status || 'stopped')}`}>
-                          {(group.status || 'stopped').toUpperCase()}
-                        </span>
+                  {/* Stats Grid */}
+                  <div className="p-4 grid grid-cols-2 md:grid-cols-5 gap-4">
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-gray-500 uppercase">Enabled</div>
+                      <div className={`text-sm font-medium ${group.enabled ? 'text-green-600' : 'text-gray-500'}`}>
+                        {group.enabled ? '● Yes' : '○ No'}
                       </div>
                     </div>
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-xs text-gray-500 mb-1">Replication Lag</div>
-                      <div className="text-lg font-semibold">{formatBytes(group.lagBytes || 0)}</div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-gray-500 uppercase">Worker</div>
+                      <div className={`text-sm font-medium ${group.workerRunning ? 'text-green-600' : 'text-gray-500'}`}>
+                        {group.workerRunning ? '● Running' : '○ Stopped'}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-gray-500 uppercase">Lag</div>
+                      <div className="text-sm font-medium">{formatBytes(group.lagBytes || 0)}</div>
                       {group.lagSeconds !== undefined && group.lagSeconds > 0 && (
-                        <div className="text-xs text-gray-400 mt-1">{group.lagSeconds}s</div>
+                        <div className="text-xs text-gray-400">{group.lagSeconds}s</div>
                       )}
                     </div>
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-xs text-gray-500 mb-1">Tables</div>
-                      <div className="text-lg font-semibold">{group.tableCount || 0}</div>
-                    </div>
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-xs text-gray-500 mb-1">Conflicts</div>
-                      <div className={`text-lg font-semibold ${(group.conflicts || 0) > 0 ? 'text-red-600' : ''}`}>
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-gray-500 uppercase">Conflicts</div>
+                      <div className={`text-sm font-medium ${(group.conflicts || 0) > 0 ? 'text-red-600' : ''}`}>
                         {group.conflicts || 0}
                       </div>
                     </div>
-                    <div className="bg-gray-50 p-3 rounded">
-                      <div className="text-xs text-gray-500 mb-1">Issues</div>
-                      <div className={`text-lg font-semibold ${(group.tablesWithIssues || 0) > 0 ? 'text-yellow-600' : ''}`}>
+                    <div className="space-y-1">
+                      <div className="text-xs font-semibold text-gray-500 uppercase">Issues</div>
+                      <div className={`text-sm font-medium ${(group.tablesWithIssues || 0) > 0 ? 'text-yellow-600' : ''}`}>
                         {group.tablesWithIssues || 0}
                       </div>
                     </div>
                   </div>
-                  <div className="mt-4 flex gap-2">
+
+                  {/* Actions */}
+                  <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex gap-2">
                     <button
                       onClick={() => openModal(groupId)}
-                      className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700"
+                      className="px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded hover:bg-gray-100"
                     >
                       View Tables
                     </button>
                     <Link
                       href={`/subscriptions/${groupId}`}
-                      className="px-3 py-1.5 bg-gray-600 text-white rounded text-sm font-medium hover:bg-gray-700"
+                      className="px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded hover:bg-gray-100"
                     >
                       View Details
                     </Link>
+                    <button
+                      onClick={(e) => handleToggle(groupId, !group.enabled, e)}
+                      disabled={isToggling || deleting.has(groupId)}
+                      className={`px-3 py-1.5 text-sm rounded font-medium ${
+                        group.enabled
+                          ? 'text-yellow-600 border border-yellow-300 hover:bg-yellow-50'
+                          : 'text-green-600 border border-green-300 hover:bg-green-50'
+                      } disabled:opacity-50`}
+                    >
+                      {isToggling ? '...' : group.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      onClick={(e) => handleDelete(groupId, e)}
+                      disabled={isToggling || deleting.has(groupId)}
+                      className="px-3 py-1.5 text-sm text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50 ml-auto"
+                    >
+                      {deleting.has(groupId) ? '...' : 'Delete'}
+                    </button>
                   </div>
                 </div>
               );
             })}
+
+            {filteredGroups.length === 0 && groups.length > 0 && (
+              <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+                No subscriptions match your search
+              </div>
+            )}
 
             {groups.length === 0 && (
               <div className="bg-white rounded-lg shadow p-12 text-center">
@@ -761,6 +866,65 @@ export default function SubscriptionsPage() {
                   <p className="text-sm text-gray-400">The publication may be empty.</p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Modal */}
+      {showBulkDeleteModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Delete {selectedIds.size} Subscription(s)</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Select what to delete along with the subscription(s):
+            </p>
+            
+            <div className="space-y-3 mb-6">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={bulkDeleteOptions.dropSubscription}
+                  onChange={e => setBulkDeleteOptions(o => ({ ...o, dropSubscription: e.target.checked }))}
+                  className="rounded"
+                  disabled
+                />
+                <span className="text-sm">Drop Subscription (required)</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={bulkDeleteOptions.dropSlot}
+                  onChange={e => setBulkDeleteOptions(o => ({ ...o, dropSlot: e.target.checked }))}
+                  className="rounded"
+                />
+                <span className="text-sm">Drop Replication Slot on source</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={bulkDeleteOptions.dropPublication}
+                  onChange={e => setBulkDeleteOptions(o => ({ ...o, dropPublication: e.target.checked }))}
+                  className="rounded"
+                />
+                <span className="text-sm">Drop Publication on source</span>
+              </label>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowBulkDeleteModal(false)}
+                className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBulkDelete}
+                disabled={bulkToggling}
+                className="px-4 py-2 text-sm text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50"
+              >
+                {bulkToggling ? 'Deleting...' : `Delete ${selectedIds.size} Subscription(s)`}
+              </button>
             </div>
           </div>
         </div>

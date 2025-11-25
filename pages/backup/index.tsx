@@ -341,6 +341,51 @@ export default function BackupPage() {
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
+  const handleDeleteBackup = async (filename: string) => {
+    try {
+      const res = await fetch('/api/backup/delete-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename }),
+      });
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to delete backup');
+      }
+      
+      setSuccess(`Deleted backup file: ${filename}`);
+      loadBackups();
+      loadBackupTasks();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const handleBulkDeleteBackups = async (filenames: string[]) => {
+    try {
+      const res = await fetch('/api/backup/delete-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filenames }),
+      });
+      
+      const data = await res.json();
+      
+      if (data.deleted > 0) {
+        setSuccess(`Deleted ${data.deleted} backup file(s)${data.failed > 0 ? `, ${data.failed} failed` : ''}`);
+      }
+      if (data.failed > 0) {
+        setError(`Failed to delete ${data.failed} file(s)`);
+      }
+      
+      loadBackups();
+      loadBackupTasks();
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const handleRestoreFromModal = async (filename: string, cleanRestore: boolean = false, tables?: string[]) => {
     try {
       setRestoring(prev => ({ ...prev, [filename]: true }));
@@ -576,6 +621,8 @@ export default function BackupPage() {
               backups={backups}
               loading={loadingBackups}
               onRestore={handleRestoreFromModal}
+              onDelete={handleDeleteBackup}
+              onBulkDelete={handleBulkDeleteBackups}
               restoring={restoring}
               formatBytes={formatBytes}
             />

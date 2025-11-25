@@ -15,6 +15,8 @@ interface CompletedBackupsListProps {
   backups: BackupInfo[];
   loading: boolean;
   onRestore: (filename: string, cleanRestore?: boolean) => void;
+  onDelete?: (filename: string) => Promise<void>;
+  onBulkDelete?: (filenames: string[]) => Promise<void>;
   restoring: { [key: string]: boolean };
   formatBytes: (bytes: number) => string;
 }
@@ -67,6 +69,8 @@ export default function CompletedBackupsList({
   backups,
   loading,
   onRestore,
+  onDelete,
+  onBulkDelete,
   restoring,
   formatBytes,
 }: CompletedBackupsListProps) {
@@ -74,6 +78,9 @@ export default function CompletedBackupsList({
   const [activeTab, setActiveTab] = useState<'all' | 'healthy' | 'failed'>('all');
   const [targetDbInfo, setTargetDbInfo] = useState<{ host: string; database: string; user: string; display: string } | null>(null);
   const [cleanRestore, setCleanRestore] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Fetch target database connection info
   useEffect(() => {
@@ -106,6 +113,52 @@ export default function CompletedBackupsList({
   };
 
   const filteredBackups = getFilteredBackups();
+
+  const toggleSelect = (filename: string) => {
+    setSelectedFiles(prev => {
+      const next = new Set(prev);
+      if (next.has(filename)) next.delete(filename);
+      else next.add(filename);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedFiles.size === filteredBackups.length) {
+      setSelectedFiles(new Set());
+    } else {
+      setSelectedFiles(new Set(filteredBackups.map(b => b.filename)));
+    }
+  };
+
+  const handleDelete = async (filename: string) => {
+    if (!onDelete) return;
+    if (!confirm(`Delete backup file "${filename}"? This cannot be undone.`)) return;
+    
+    setDeleting(filename);
+    try {
+      await onDelete(filename);
+      selectedFiles.delete(filename);
+      setSelectedFiles(new Set(selectedFiles));
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!onBulkDelete || selectedFiles.size === 0) return;
+    
+    const count = selectedFiles.size;
+    if (!confirm(`Delete ${count} backup file(s)? This cannot be undone.`)) return;
+    
+    setBulkDeleting(true);
+    try {
+      await onBulkDelete(Array.from(selectedFiles));
+      setSelectedFiles(new Set());
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200">
@@ -198,15 +251,37 @@ export default function CompletedBackupsList({
         </div>
 
         {/* Search */}
-        <div>
+        <div className="flex gap-2">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search backup files..."
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
           />
         </div>
+
+        {/* Bulk Actions */}
+        {selectedFiles.size > 0 && onBulkDelete && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-blue-800">{selectedFiles.size} file(s) selected</span>
+              <button
+                onClick={() => setSelectedFiles(new Set())}
+                className="text-sm text-blue-600 hover:text-blue-800"
+              >
+                Clear
+              </button>
+            </div>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting}
+              className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+            >
+              {bulkDeleting ? 'Deleting...' : `Delete ${selectedFiles.size} File(s)`}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="overflow-x-auto">
@@ -223,6 +298,16 @@ export default function CompletedBackupsList({
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                {(onDelete || onBulkDelete) && (
+                  <th className="px-3 py-3 text-center w-10">
+                    <input
+                      type="checkbox"
+                      checked={selectedFiles.size > 0 && selectedFiles.size === filteredBackups.length}
+                      onChange={toggleSelectAll}
+                      className="rounded w-4 h-4"
+                    />
+                  </th>
+                )}
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Filename
                 </th>
@@ -247,8 +332,18 @@ export default function CompletedBackupsList({
               {filteredBackups.map((backup) => (
                 <tr 
                   key={backup.filename} 
-                  className={`hover:bg-gray-50 ${backup.exists === false ? 'bg-orange-50' : ''}`}
+                  className={`hover:bg-gray-50 ${backup.exists === false ? 'bg-orange-50' : ''} ${selectedFiles.has(backup.filename) ? 'bg-blue-50' : ''}`}
                 >
+                  {(onDelete || onBulkDelete) && (
+                    <td className="px-3 py-4 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedFiles.has(backup.filename)}
+                        onChange={() => toggleSelect(backup.filename)}
+                        className="rounded w-4 h-4"
+                      />
+                    </td>
+                  )}
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center space-x-2">
                       <span className="text-sm font-mono text-gray-900">{backup.filename}</span>
@@ -302,49 +397,60 @@ export default function CompletedBackupsList({
                     )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <button
-                      onClick={() => {
-                        if (backup.exists === false) {
-                          alert(`Warning: The backup file ${backup.filename} is not found on the filesystem. The restore may fail.`);
-                        }
-                        
-                        // Build detailed confirmation message
-                        const dbInfo = targetDbInfo 
-                          ? `\n\nTarget Database: ${targetDbInfo.display}`
-                          : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
-                        
-                        const confirmMsg = cleanRestore
-                          ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
-                            `You are about to restore backup:\n` +
-                            `  ${backup.filename}\n` +
-                            `  Size: ${formatBytes(backup.size)}\n` +
-                            `${dbInfo}\n\n` +
-                            `CLEAN RESTORE MODE:\n` +
-                            `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
-                            `  • All existing data will be PERMANENTLY DELETED\n` +
-                            `  • This action CANNOT be undone\n\n` +
-                            `Are you absolutely sure you want to proceed?`
-                          : `⚠️ RESTORE OPERATION ⚠️\n\n` +
-                            `You are about to restore backup:\n` +
-                            `  ${backup.filename}\n` +
-                            `  Size: ${formatBytes(backup.size)}\n` +
-                            `${dbInfo}\n\n` +
-                            `REGULAR RESTORE MODE:\n` +
-                            `  • Data will be restored on top of existing tables\n` +
-                            `  • This may cause duplicates or conflicts\n` +
-                            `  • Consider using "Clean Restore" for a fresh restore\n\n` +
-                            `Are you sure you want to proceed?`;
-                        
-                        if (confirm(confirmMsg)) {
-                          onRestore(backup.filename, cleanRestore);
-                        }
-                      }}
-                      disabled={restoring[backup.filename] || backup.exists === false}
-                      className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                      title={backup.exists === false ? 'File not found on filesystem' : ''}
-                    >
-                      {restoring[backup.filename] ? 'Restoring...' : 'Restore'}
-                    </button>
+                    <div className="flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => {
+                          if (backup.exists === false) {
+                            alert(`Warning: The backup file ${backup.filename} is not found on the filesystem. The restore may fail.`);
+                          }
+                          
+                          // Build detailed confirmation message
+                          const dbInfo = targetDbInfo 
+                            ? `\n\nTarget Database: ${targetDbInfo.display}`
+                            : '\n\nTarget Database: (using TARGET_DATABASE_URL)';
+                          
+                          const confirmMsg = cleanRestore
+                            ? `⚠️ DESTRUCTIVE OPERATION ⚠️\n\n` +
+                              `You are about to restore backup:\n` +
+                              `  ${backup.filename}\n` +
+                              `  Size: ${formatBytes(backup.size)}\n` +
+                              `${dbInfo}\n\n` +
+                              `CLEAN RESTORE MODE:\n` +
+                              `  • Existing tables will be TRUNCATED (plain SQL) or DROPPED (custom format)\n` +
+                              `  • All existing data will be PERMANENTLY DELETED\n` +
+                              `  • This action CANNOT be undone\n\n` +
+                              `Are you absolutely sure you want to proceed?`
+                            : `⚠️ RESTORE OPERATION ⚠️\n\n` +
+                              `You are about to restore backup:\n` +
+                              `  ${backup.filename}\n` +
+                              `  Size: ${formatBytes(backup.size)}\n` +
+                              `${dbInfo}\n\n` +
+                              `REGULAR RESTORE MODE:\n` +
+                              `  • Data will be restored on top of existing tables\n` +
+                              `  • This may cause duplicates or conflicts\n` +
+                              `  • Consider using "Clean Restore" for a fresh restore\n\n` +
+                              `Are you sure you want to proceed?`;
+                          
+                          if (confirm(confirmMsg)) {
+                            onRestore(backup.filename, cleanRestore);
+                          }
+                        }}
+                        disabled={restoring[backup.filename] || backup.exists === false}
+                        className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        title={backup.exists === false ? 'File not found on filesystem' : ''}
+                      >
+                        {restoring[backup.filename] ? 'Restoring...' : 'Restore'}
+                      </button>
+                      {onDelete && (
+                        <button
+                          onClick={() => handleDelete(backup.filename)}
+                          disabled={deleting === backup.filename}
+                          className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-300 rounded hover:bg-red-50 disabled:opacity-50"
+                        >
+                          {deleting === backup.filename ? '...' : 'Delete'}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
