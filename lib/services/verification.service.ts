@@ -1010,16 +1010,16 @@ export class VerificationService {
       const timestampExpr = this.buildTimestampExpression(timestampColumn, columnRef);
       const timeWindowClause = this.buildTimeWindowClause(hoursWindow, 'ts');
 
+      // Build time window clause for use inside the CTE (before alias)
+      const cteTimeWindowClause = hoursWindow 
+        ? `AND ${timestampExpr} >= NOW() - INTERVAL '${Math.max(1, Math.min(hoursWindow, 24 * 30))} hours'`
+        : '';
+
       const sourceQuery = `
-        WITH extracted AS (
-          SELECT ${timestampExpr} AS ts
-          FROM ${fullTableRef} ${tableAlias}
-          WHERE ${timestampExpr} IS NOT NULL
-        )
-        SELECT date_trunc('hour', ts) AS hour_bucket, COUNT(*) AS row_count
-        FROM extracted
-        WHERE ts IS NOT NULL
-        ${timeWindowClause}
+        SELECT date_trunc('hour', ${timestampExpr}) AS hour_bucket, COUNT(*) AS row_count
+        FROM ${fullTableRef} ${tableAlias}
+        WHERE ${timestampExpr} IS NOT NULL
+        ${cteTimeWindowClause}
         GROUP BY hour_bucket
         ORDER BY hour_bucket
       `;
