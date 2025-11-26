@@ -95,17 +95,19 @@ export default async function handler(
     }
 
     if (effectiveReplication) {
-      // Generate names using custom name or timestamp
-      if (sanitizedNameForSlot) {
-        // Use custom name for publication and slot (PostgreSQL-safe)
-        const timestamp = Date.now();
-        publicationName = `backup_pub_${sanitizedNameForSlot}_${timestamp}`;
-        slotName = `backup_slot_${sanitizedNameForSlot}_${timestamp}`;
+      // Generate compact names to stay under PostgreSQL's 63 char limit
+      // Format: {prefix}_{name12}_{timestamp} where name is truncated to 12 chars
+      const timestamp = Date.now();
+      const shortName = sanitizedNameForSlot 
+        ? sanitizedNameForSlot.substring(0, 12) 
+        : '';
+      
+      if (shortName) {
+        publicationName = `p_${shortName}_${timestamp}`;
+        slotName = `s_${shortName}_${timestamp}`;
       } else {
-        // Fallback to timestamp only
-        const timestamp = Date.now();
-        publicationName = `backup_pub_${timestamp}`;
-        slotName = `backup_slot_${timestamp}`;
+        publicationName = `p_${timestamp}`;
+        slotName = `s_${timestamp}`;
       }
     }
 

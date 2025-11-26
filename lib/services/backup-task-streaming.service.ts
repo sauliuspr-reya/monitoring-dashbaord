@@ -126,9 +126,9 @@ export class BackupTaskStreamingService extends BackupTaskService {
           );
         }
 
-        // Generate names if not provided
-        if (!slotName) slotName = `backup_slot_${Date.now()}`;
-        if (!publicationName) publicationName = `backup_pub_${Date.now()}`;
+        // Generate compact names if not provided (must stay under 63 chars)
+        if (!slotName) slotName = `s_${Date.now()}`;
+        if (!publicationName) publicationName = `p_${Date.now()}`;
 
         // 1. Create Publication (if not exists)
         // We create publication BEFORE starting the transaction because creating a publication
