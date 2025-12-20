@@ -1,7 +1,7 @@
 FROM node:20-alpine AS base
 
-# Install PostgreSQL client tools (pg_dump, psql)
-RUN apk add --no-cache postgresql-client
+# Install PostgreSQL client tools (pg_dump, psql) and Python with pip
+RUN apk add --no-cache postgresql-client python3 py3-pip git
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -67,12 +67,21 @@ RUN --mount=from=builder,source=/app/node_modules,target=/tmp/node_modules \
     if [ -d /tmp/node_modules/@cspotcode ]; then cp -r /tmp/node_modules/@cspotcode ./node_modules/; fi && \
     chown -R nextjs:nodejs ./node_modules
 
+# Install Python SDK for depth market maker
+# Clone the reya-python-sdk repo and install dependencies
+RUN git clone --branch feat/spot --depth 1 https://github.com/Reya-Labs/reya-python-sdk.git /app/reya-python-sdk && \
+    cd /app/reya-python-sdk && \
+    python3 -m venv .venv && \
+    .venv/bin/pip install --no-cache-dir -e . && \
+    chown -R nextjs:nodejs /app/reya-python-sdk
+
 USER nextjs
 
 # PORT can be overridden via environment variable, default to 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 ENV BACKUP_DIR=/backup
+ENV PYTHON_SDK_PATH=/app/reya-python-sdk
 
 EXPOSE 3000
 

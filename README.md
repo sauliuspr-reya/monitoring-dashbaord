@@ -57,6 +57,11 @@ Configure via External Secrets or Helm values:
 - `AUTH_PASSWORD` - Basic auth password (required if AUTH_ENABLED is true)
 - `AUTH_ENABLED` - Enable basic auth (default: true)
 
+**Depth Market Maker** (optional, for ME page "Run Depth" feature):
+- `SPOT_ACCOUNT_ID_1` - Reya SPOT account ID for market making
+- `SPOT_PRIVATE_KEY_1` - Ethereum private key for signing orders
+- `SPOT_WALLET_ADDRESS_1` - Wallet address associated with the account
+
 ### Persistent Volume for Backups
 
 The application requires a PVC mounted at `/backup` for storing database backups.
