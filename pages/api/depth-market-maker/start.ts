@@ -102,7 +102,7 @@ export default async function handler(
       ...process.env,
       PYTHONUNBUFFERED: '1',
       REYA_WS_URL: envConfig.wsUrl,
-      REYA_API_BASE_URL: envConfig.apiUrl,
+      REYA_API_URL: envConfig.apiUrl,
       CHAIN_ID: envConfig.chainId,
     };
 
