@@ -64,7 +64,7 @@ Configure via External Secrets or Helm values:
 
 ### Persistent Volume for Backups
 
-The application requires a PVC mounted at `/backup` for storing database backups!
+The application requires a PVC mounted at `/backup` for storing database backups.
 
 - Mount point: `/backup`
 - Recommended size: 100Gi
