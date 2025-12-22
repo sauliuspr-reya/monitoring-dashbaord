@@ -1,0 +1,118 @@
+replicaCount: 1
+
+image:
+  repository: europe-west3-docker.pkg.dev/mainnet-473609/reya/monitoring-dashbaord
+  tag: latest
+  pullPolicy: Always
+
+strategy:
+  type: Recreate
+  
+resources:
+  requests:
+    cpu: 150m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+
+autoscaling:
+  enabled: false
+
+probes:
+  liveness: 
+    path: /healthz
+  readiness:
+    path: /healthz
+
+# Backup volume configuration
+backupVolume:
+  enabled: true
+  storageClass: "standard"
+  size: 4Ti
+  accessModes: ["ReadWriteOnce"]
+
+# Security context for the pod
+securityContext:
+  fsGroup: 65533  # nogroup
+  runAsUser: 1001  # nextjs user
+  runAsGroup: 65533  # nogroup
+
+# Init containers that run before app containers
+initContainers:
+  - name: init-backup-dir
+    image: busybox:1.28
+    command: ['sh', '-c', 'chown -R 1001:65533 /backup && chmod -R 775 /backup']
+    volumeMounts:
+      - name: backup-volume
+        mountPath: /backup
+
+defaultSecretStore: gcp-secretstore-mainnet
+defaultSecretStoreKind: ClusterSecretStore
+
+externalSecrets:
+  default:
+    remoteRef:
+      key: monitoring-dashboard
+    envFrom: true
+    properties:
+    - MONITORING_DB_HOST
+    - MONITORING_DB_PORT
+    - MONITORING_DB_NAME
+    - MONITORING_DB_USER
+    - MONITORING_DB_PASSWORD
+    - SOURCE_DATABASE_URL
+    - TARGET_DATABASE_URL
+    - NEXTAUTH_SECRET
+    - NEXTAUTH_URL
+    - AUTH_USERNAME
+    - AUTH_PASSWORD
+    - AUTH_ENABLED
+    - NODE_ENV
+    - NEXT_PUBLIC_APP_URL
+    - SPOT_ACCOUNT_ID_1
+    - SPOT_PRIVATE_KEY_1
+    - SPOT_WALLET_ADDRESS_1
+
+  google-oauth:
+    remoteRef:
+      key: monitoring-dashboard-oauth-client-secret
+    envFrom: true
+    data:
+      - secretKey: GOOGLE_CLIENT_ID
+        remoteRef:
+          key: monitoring-dashboard-oauth-client-secret
+          property: web.client_id
+      - secretKey: GOOGLE_CLIENT_SECRET
+        remoteRef:
+          key: monitoring-dashboard-oauth-client-secret
+          property: web.client_secret
+
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt"
+    external-dns.alpha.kubernetes.io/hostname: replication-dashboard.reya.network,monitoring-dashboard.reya.network
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+    nginx.ingress.kubernetes.io/compute-full-forwarded-for: "true"
+    # Trust Cloudflare IPs for real client IP
+    nginx.ingress.kubernetes.io/enable-real-ip: "true"
+  hosts:
+    - host:  replication-dashboard.reya.network
+      paths:
+        - path: /
+          pathType: Prefix
+    - host:  monitoring-dashboard.reya.network
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+  - hosts:
+    - replication-dashboard.reya.network
+    secretName: replication-dashboard-tls
+  - hosts:
+    - monitoring-dashboard.reya.network
+    secretName: monitoring-dashboard-tls

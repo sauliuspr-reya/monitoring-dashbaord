@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: reya-ops-monitoring-dashboard
+  namespace: argocd
+  labels:
+    environment: ops
+    application: monitoring-dashboard
+spec:
+  project: reya-ops
+  source:
+    repoURL: https://github.com/sauliuspr-reya/monitoring-dashbaord.git
+    targetRevision: HEAD
+    path: charts/nextjs-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-mainnet-monitoring-dashboard.yaml
+      values: |
+        fullnameOverride: reya-ops-monitoring-dashboard
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: reya-ops
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

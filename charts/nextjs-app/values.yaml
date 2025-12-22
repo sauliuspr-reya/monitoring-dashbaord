@@ -1,0 +1,96 @@
+# Default values for nextjs-app
+replicaCount: 1
+
+image:
+  repository: ""
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Init containers that run before app containers
+initContainers: []
+  # - name: init-backup-dir
+  #   image: busybox:1.28
+  #   command: ['sh', '-c', 'chown -R 1001:65533 /backup && chmod -R 775 /backup']
+  #   volumeMounts:
+  #     - name: backup-volume
+  #       mountPath: /backup
+
+securityContext: {}
+
+podAnnotations: {}
+
+# External Secrets configuration
+# External Secrets configuration
+defaultSecretStore: aws-secretstore
+defaultSecretStoreKind: ClusterSecretStore
+defaultRefreshInterval: 10m
+defaultCreationPolicy: Owner
+
+externalSecrets: {}
+
+# Backup volume configuration
+backupVolume:
+  enabled: false
+  storageClass: ""  # Uses default storage class if empty
+  size: 10Gi
+  accessModes: ["ReadWriteOnce"]
+
+# Extra environment variables
+extraEnvs: []
+# - name: NEXT_PUBLIC_API_URL
+#   value: "https://api.example.com"
+# - name: NEXT_PUBLIC_ENVIRONMENT
+#   value: "production"
+
+service:
+  type: ClusterIP
+  port: 3000
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+probes:
+  liveness:
+    path: /api/health
+  readiness:
+    path: /api/health
+
+# Volume mounts configuration
+volumeMounts: []
+# - name: backup-volume
+#   mountPath: /backup
+
+# Volumes configuration
+volumes: []
+# - name: backup-volume
+#   persistentVolumeClaim:
+#     claimName: backup-pvc-name
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+certificate:
+  enabled: false
+  secretName: ""
+  dnsNames: []
+  commonName: ""
+  issuerRef:
+    name: ""
+    kind: ClusterIssuer

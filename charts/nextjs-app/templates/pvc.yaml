@@ -1,0 +1,18 @@
+{{- if .Values.backupVolume.enabled -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nextjs-app.fullname" . }}-backup
+  labels:
+    {{- include "nextjs-app.labels" . | nindent 4 }}
+spec:
+  accessModes: {{ .Values.backupVolume.accessModes | default (list "ReadWriteOnce") | toYaml | nindent 4 }}
+  {{- if .Values.backupVolume.storageClassName }}
+  storageClassName: {{ .Values.backupVolume.storageClassName | quote }}
+  {{- else if .Values.backupVolume.storageClass }}
+  storageClassName: {{ .Values.backupVolume.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backupVolume.size | default "10Gi" }}
+{{- end }}

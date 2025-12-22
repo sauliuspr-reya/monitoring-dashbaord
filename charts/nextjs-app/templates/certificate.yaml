@@ -1,0 +1,20 @@
+{{- if .Values.certificate.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "nextjs-app.fullname" . }}-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nextjs-app.labels" . | nindent 4 }}
+spec:
+  secretName: {{ .Values.certificate.secretName }}
+  {{- with .Values.certificate.dnsNames }}
+  dnsNames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.certificate.commonName }}
+  commonName: {{ . }}
+  {{- end }}
+  issuerRef:
+    {{- toYaml .Values.certificate.issuerRef | nindent 4 }}
+{{- end }}

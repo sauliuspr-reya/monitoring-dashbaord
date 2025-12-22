@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { withAuth } from 'next-auth/middleware';
 
 // Simple authentication using environment variables
 function getAuthConfig() {
@@ -19,13 +20,39 @@ function getAuthConfig() {
   };
 }
 
-export function middleware(request: NextRequest) {
-  const auth = getAuthConfig();
+function isSsoEnabled() {
+  return Boolean(
+    process.env.GOOGLE_CLIENT_ID &&
+      process.env.GOOGLE_CLIENT_SECRET &&
+      process.env.NEXTAUTH_SECRET
+  );
+}
 
+const ssoMiddleware = withAuth(
+  function middleware() {
+    return NextResponse.next();
+  },
+  {
+    callbacks: {
+      authorized: ({ token }: { token: unknown }) => {
+        return !!token;
+      },
+    },
+  }
+);
+
+export function middleware(request: NextRequest) {
   // Skip auth for health check endpoints
   if (request.nextUrl.pathname === '/api/healthz' || request.nextUrl.pathname === '/healthz') {
     return NextResponse.next();
   }
+
+  // Use SSO when configured
+  if (isSsoEnabled()) {
+    return ssoMiddleware(request);
+  }
+
+  const auth = getAuthConfig();
 
   // Skip auth if disabled
   if (!auth.enabled) {
@@ -67,11 +94,12 @@ export const config = {
      * Match all request paths except:
      * - _next/static (static files)
      * - _next/image (image optimization files)
+     * - api/auth (NextAuth routes)
      * - favicon.ico (favicon file)
      * - healthz (health check endpoint)
      * - public files (public folder)
      */
-    '/((?!_next/static|_next/image|favicon.ico|healthz|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|api/auth|favicon.ico|healthz|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 };
 
