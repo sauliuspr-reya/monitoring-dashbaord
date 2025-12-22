@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import type { NextFetchEvent } from 'next/server';
 import { withAuth } from 'next-auth/middleware';
 
 // Simple authentication using environment variables
@@ -41,7 +42,7 @@ const ssoMiddleware = withAuth(
   }
 );
 
-export function middleware(request: NextRequest) {
+export function middleware(request: NextRequest, event: NextFetchEvent) {
   // Skip auth for health check endpoints
   if (request.nextUrl.pathname === '/api/healthz' || request.nextUrl.pathname === '/healthz') {
     return NextResponse.next();
@@ -49,7 +50,7 @@ export function middleware(request: NextRequest) {
 
   // Use SSO when configured
   if (isSsoEnabled()) {
-    return ssoMiddleware(request);
+    return ssoMiddleware(request as any, event);
   }
 
   const auth = getAuthConfig();
